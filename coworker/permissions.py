@@ -42,6 +42,24 @@ _INTERPRETERS = {
 # Flags that turn a search/list tool into an execution or deletion tool.
 _DANGEROUS_FLAGS = {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprintf"}
 
+# Programs that run code chosen elsewhere: an interpreter runs the script file it is
+# handed, a package manager runs whatever lifecycle scripts the manifest declares, a build
+# tool runs the recipe in the file it finds. A BARE one-word allowlist entry for one of
+# these — `python`, `npm`, `make` — is not a decision about anything: it auto-runs
+# `python attacker.py` and `npm install <anything>` alike (OW-SEC-013).
+#
+# Distinct from `_ARG_EXECUTORS`, which is absolute (the inner program is named right there
+# in the argv, so no prefix rule can ever vouch for it). These stay usable: a rule that
+# names a subcommand — `npm test`, `make build`, `python scripts/report.py` — is the
+# operator deciding about a specific thing, and still auto-runs. Only the bare word does
+# not, because the bare word delegates everything after it to a file the rule never saw.
+_DELEGATING_PROGRAMS = _INTERPRETERS | {
+    "npm", "pnpm", "yarn", "bun", "pip", "pip3", "pipx", "poetry", "uv", "conda",
+    "cargo", "go", "gradle", "gradlew", "mvn", "make", "gmake", "rake", "gem",
+    "bundle", "bundler", "composer", "dotnet", "ninja", "cmake", "task", "just",
+    "ant", "sbt", "swift", "flutter", "dart", "nix",
+}
+
 
 def _split_commands(command: str) -> list[str]:
     """Split a compound command on its separators. Longest separators first so `&&` isn't
@@ -53,14 +71,65 @@ def _split_commands(command: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def _path_operands(command: str) -> list[str]:
+    """Every argument of `command` that names a filesystem path (OW-SEC-011/013).
+
+    Errs toward naming MORE operands, the same asymmetry `readonly.read_targets` documents:
+    an extra operand costs one approval, a missed one is an unscoped read or write.
+
+    A token counts when it carries a separator, starts with `~`, or rides in `--flag=path`.
+    URLs are excluded — `://` means a destination, which is the egress gate's business, and
+    treating one as a path would send every allowlisted `curl` to an approval card.
+    """
+    out: list[str] = []
+    for part in _split_commands(command):
+        # BOTH parses, unioned. POSIX mode is how the command will actually be split on
+        # macOS/Linux, but it treats a backslash as an escape — so a Windows path like
+        # ..\..\etc\passwd comes back as '....etcpasswd' with no separator left to notice.
+        # Non-POSIX mode preserves the backslashes (at the cost of keeping quote
+        # characters), which is the spelling the traversal check needs.
+        tokens: list[str] = []
+        for posix in (True, False):
+            try:
+                tokens.extend(shlex.split(part, posix=posix)[1:])
+            except ValueError:
+                return []  # unparseable: the caller already refuses these
+        for token in tokens:
+            candidate = token.strip("'\"")
+            if candidate.startswith("-") and "=" in candidate:
+                candidate = candidate.split("=", 1)[1].strip("'\"")
+            elif candidate.startswith("-"):
+                continue
+            if not candidate or "://" in candidate:
+                continue
+            # Backslash separators are Windows paths (and ..\..\ traversal); judged on the
+            # forward-slash spelling so one rule covers both platforms.
+            normalized = candidate.replace(chr(92), "/")
+            if "/" in normalized or normalized.startswith("~"):
+                out.append(normalized)
+    return out
+
+
+def _program_name(argv: list[str]) -> str:
+    """argv[0] as a bare, lowercased, extension-stripped program name."""
+    if not argv:
+        return ""
+    program = Path(argv[0]).name.lower()
+    return program[:-4] if program.endswith(".exe") else program
+
+
+def _delegates(argv: list[str]) -> bool:
+    """True when argv[0] runs code chosen by a file rather than by the command line."""
+    return _program_name(argv) in _DELEGATING_PROGRAMS
+
+
 def _is_prefix_eligible(argv: list[str]) -> bool:
     """False when a parsed command can never be vouched for by a prefix rule, because it
     runs code the rule never saw: another program named in its arguments, inline source, or
     an execution/deletion flag."""
     if not argv:
         return False
-    program = Path(argv[0]).name.lower()
-    program = program[:-4] if program.endswith(".exe") else program
+    program = _program_name(argv)
     if program in _ARG_EXECUTORS:
         return False
     if program in _INTERPRETERS and any(a in _INLINE_CODE_FLAGS for a in argv[1:]):
@@ -469,7 +538,25 @@ class PermissionEngine:
         if is_shell:
             command = str(arguments.get("command", ""))
             if self._command_allowed(command):
-                return Decision(True, "command on allowlist")
+                # OW-SEC-011: an allowlist entry vets what a command DOES; the roots vet
+                # what it TOUCHES. Without this half, `cat` on the allowlist auto-reads
+                # ~/.aws/credentials and another repo's history — an escape the
+                # self-protection floor does not catch, since that guards a fixed set of
+                # settings files, not the granted roots. Out-of-root falls through to
+                # approval rather than denying: the operator can still say yes, once.
+                escapes = [
+                    path
+                    for path in _path_operands(command)
+                    if not self._under_root(path)
+                ]
+                if not escapes:
+                    return Decision(True, "command on allowlist")
+                return Decision(
+                    False,
+                    "this command reaches outside the session's directories: "
+                    + ", ".join(escapes[:3]),
+                    needs_user=True,
+                )
             if (
                 honor_session_grants
                 and command
@@ -710,6 +797,12 @@ class PermissionEngine:
                 return False  # unbalanced quotes etc. — treat as not-allowlisted
             if not argv or not _is_prefix_eligible(argv):
                 return False
-            if not any(argv[: len(p)] == p for p in prefixes):
+            matched = [p for p in prefixes if argv[: len(p)] == p]
+            if not matched:
+                return False
+            # OW-SEC-013: for a delegating program the rule must name more than the
+            # program. `npm test` vouches for `npm test -- --watch`; a bare `npm` vouches
+            # for nothing, because everything after it is a file the rule never saw.
+            if _delegates(argv) and not any(len(p) >= 2 for p in matched):
                 return False
         return True

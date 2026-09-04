@@ -96,11 +96,29 @@ def test_argument_executors_never_prefix_allowed(tmp_path, command, allowlist):
     assert not _allowed(tmp_path, command, allowlist)
 
 
-def test_interpreter_without_inline_code_is_still_eligible(tmp_path):
-    # `python script.py` runs project code, but it is not the inline-code form; the prefix
-    # rule covers it as before. (CMD-8 — "runs project-controlled code" — is a signal for
-    # the reviewer, not a prefix-eligibility rule.)
-    assert _allowed(tmp_path, "python script.py", ["python"])
+def test_a_bare_interpreter_entry_does_not_cover_a_script(tmp_path):
+    """OW-SEC-013 (tightened from upstream).
+
+    Upstream allowed `python script.py` under a bare `python` rule, reasoning that it is
+    not the inline-code form. But a bare `python` entry is not a decision about anything:
+    it auto-runs whatever file the argv names, and that file is chosen after the rule was
+    written — by the model, or by whoever could write into the workspace. `python -c` and
+    `python evil.py` differ only in where the code is stored.
+
+    The rule stays usable: naming the script (or the subcommand, for a package manager) is
+    the operator deciding about a specific thing, and still auto-runs.
+    """
+    assert not _allowed(tmp_path, "python script.py", ["python"])
+    assert _allowed(tmp_path, "python script.py", ["python script.py"])
+    assert _allowed(tmp_path, "python script.py --json", ["python script.py"])
+
+
+def test_a_bare_package_manager_entry_does_not_cover_its_subcommands(tmp_path):
+    """Same rule, same reason: the lifecycle scripts a package manager runs live in a
+    manifest the allowlist rule never saw."""
+    assert not _allowed(tmp_path, "npm install evil", ["npm"])
+    assert not _allowed(tmp_path, "npm run anything", ["npm"])
+    assert _allowed(tmp_path, "npm test", ["npm test"])
 
 
 # -- word matching, not text matching -------------------------------------------
