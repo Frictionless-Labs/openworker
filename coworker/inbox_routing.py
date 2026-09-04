@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .inbox import PROTECTED_KINDS
+from .jsonstate import read_json_safe, write_json_atomic
 
 DEFAULT_INBOX = "default"
 # Embeds the item id in a delivered message. Emitted as [ow:…] since the bot's rebrand
@@ -46,28 +47,28 @@ class InboxRouting:
         self._load()
 
     def _load(self) -> None:
-        if self.path and self.path.is_file():
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            for raw in data.get("bindings", []):
+        if not self.path:
+            return
+        data = read_json_safe(self.path, default={}, store="inbox_routing") or {}
+        for raw in data.get("bindings", []):
+            try:
                 b = InboxBinding(**raw)
-                self._bindings[b.name] = b
-            self._persona_default = dict(data.get("persona_default", {}))
-            self._session_override = dict(data.get("session_override", {}))
+            except TypeError:
+                continue
+            self._bindings[b.name] = b
+        self._persona_default = dict(data.get("persona_default", {}) or {})
+        self._session_override = dict(data.get("session_override", {}) or {})
 
     def _save(self) -> None:
         if not self.path:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(
-                {
-                    "bindings": [asdict(b) for b in self._bindings.values()],
-                    "persona_default": self._persona_default,
-                    "session_override": self._session_override,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        write_json_atomic(
+            self.path,
+            {
+                "bindings": [asdict(b) for b in self._bindings.values()],
+                "persona_default": self._persona_default,
+                "session_override": self._session_override,
+            },
         )
 
     # -- config -----------------------------------------------------------------

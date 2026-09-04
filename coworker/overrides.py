@@ -20,6 +20,8 @@ import json
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
+
+from .jsonstate import read_json_safe, write_json_atomic
 from typing import Callable, Optional
 
 from .risk import RiskClass
@@ -50,9 +52,9 @@ class RiskOverrideStore:
         self._rules: list[_Rule] = self._load()
 
     def _load(self) -> list[_Rule]:
-        if not (self.path and self.path.is_file()):
+        if not self.path:
             return []
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data = read_json_safe(self.path, default={}, store="risk_overrides") or {}
         # Trust entries: {"pattern": "..."} dicts (the written form) or bare strings.
         seen: set[str] = set()
         for entry in data.get("trust", []) or []:
@@ -91,19 +93,14 @@ class RiskOverrideStore:
     def save(self) -> None:
         if not self.path:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(
-                {
-                    "rules": [
-                        {"pattern": r.pattern, "risk": r.risk.value}
-                        for r in self._rules
-                    ],
-                    "trust": [{"pattern": p} for p in self._trust],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        write_json_atomic(
+            self.path,
+            {
+                "rules": [
+                    {"pattern": r.pattern, "risk": r.risk.value} for r in self._rules
+                ],
+                "trust": [{"pattern": p} for p in self._trust],
+            },
         )
 
     def set_rule(self, pattern: str, risk: RiskClass | str) -> None:

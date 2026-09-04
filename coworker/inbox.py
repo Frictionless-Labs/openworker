@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .jsonstate import read_json_safe, write_json_atomic
 KIND_APPROVAL = "approval"
 KIND_QUESTION = "question"
 KIND_NOTIFICATION = "notification"
@@ -126,19 +127,23 @@ class InboxStore:
 
     # -- persistence ------------------------------------------------------------
     def _load(self) -> None:
-        if self.path and self.path.is_file():
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            for raw in data.get("items", []):
+        # OW-REL-001: a corrupt queue file must not brick startup — this constructor runs
+        # during server boot, and the operator's route to fixing anything is the app.
+        if not self.path:
+            return
+        data = read_json_safe(self.path, default={}, store="inbox")
+        for raw in (data or {}).get("items", []):
+            try:
                 item = InboxItem(**raw)
-                self._items[item.id] = item
+            except TypeError:
+                continue  # one record from a different schema loses that record, not the file
+            self._items[item.id] = item
 
     def _save(self) -> None:
         if not self.path:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps({"items": [asdict(i) for i in self._items.values()]}, indent=2),
-            encoding="utf-8",
+        write_json_atomic(
+            self.path, {"items": [asdict(i) for i in self._items.values()]}
         )
 
     # -- adding -----------------------------------------------------------------

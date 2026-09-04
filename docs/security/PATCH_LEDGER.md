@@ -47,16 +47,16 @@ property of `5bc10d9` or new Frictionless work.
 | OW-SEC-006 | P0 | External content authority is enforced by *prompt text* only ("treat as untrusted data, not instructions"); no structural origin survives storage or provider serialization | `coworker/provenance.py` tracks self-authored FILES only; no `TrustOrigin` | Yes | **CLOSED** `downstream-fix-required` | M04 | `coworker/trust.py`, `coworker/engine.py` | `tests/test_provenance_egress.py` §1 | High-sensitivity connectors OFF | Upstream ships structural taint (OPE-114 general design) |
 | OW-SEC-007 | P0 | No egress gate consumes provenance: untrusted-derived or secret-like content may leave to a destination the operator never bound | Domain allowlists exist, but are content-blind | Yes | **CLOSED** `downstream-fix-required` | M04 | `coworker/egress.py`, `coworker/permissions.py`, `coworker/agent.py` | `tests/test_provenance_egress.py` §2, §4 | Connector writes OFF | Upstream ships an egress policy layer |
 | OW-SEC-008 | P1 | `web_fetch` can carry sensitive data in query/body to a new destination | `web_fetch` is `requires_approval=False`; address guard checks destination class, not content sensitivity | Yes | **CLOSED** `downstream-fix-required` | M04 | `coworker/egress.py` | `carries_payload` query-string cases + red-team row 4 | — | Upstream adds content-aware egress |
-| OW-SEC-009 | P0 | MCP OAuth discovery / registration / token / authorization endpoints are fetched without address validation; hostile MCP metadata can point them at loopback, RFC1918 or `169.254.169.254` | `coworker/mcp/oauth.py` builds and fetches `/.well-known/...` with a bare `httpx.AsyncClient`; `web/guard.py` is not imported | Yes | `downstream-fix-required` | M05 | `coworker/mcp/oauth.py` | malicious-MCP-metadata fixtures | Remote MCP OFF until green | Upstream routes MCP OAuth through the address guard |
-| OW-SEC-010 | P0 | Browser navigation SSRF: only the model-supplied URL is pre-checked; redirect landing is *detected* after the request leaves, and JS / meta-refresh hops are unchecked | `check_url` pre-check + `redirect_refusal` post-check in `browser_automation.py` | Yes | `inherited-upstream-fix` (partial) + `disabled-by-capability-gate` | M05 | `coworker/connectors/browser_automation.py` | redirect + in-page-navigation fixtures | Browser automation OFF — prevention is not achievable without a vetting proxy | A per-hop request proxy lands |
-| OW-SEC-011 | P0 | Granted workspace roots must bound every path-bearing operation, not just canonical file writes | `PermissionEngine` scopes `WRITE_LOCAL` writes and read-only-grant read targets against roots | Yes | `inherited-upstream-fix` | M06 | `coworker/permissions.py`, `coworker/roots.py` | traversal / symlink / second-root / Windows-separator corpus | — | Never remove; add corpus lock |
-| OW-SEC-012 | P0 | Browser upload and screenshot bypass root scoping because they classify EXTERNAL, not WRITE_LOCAL | Fixed upstream (OPE-122): `_readable_source` / `_writable_target` resolve inside granted roots | Yes | `inherited-upstream-fix` | M06 | `coworker/connectors/browser_automation.py` | upload/screenshot escape cases | — | Never remove; add corpus lock |
-| OW-SEC-013 | P0 | An allowlist entry on a bare program grants arbitrary execution through its arguments | Upstream blocks `_ARG_EXECUTORS`, inline-code interpreter flags, and `_DANGEROUS_FLAGS`. **Gap:** a bare interpreter running a *script file* (`python setup.py`) and package managers (`npm`, `pip`, `yarn`, `pnpm`, `cargo`, `go`, `make`, `gradle`) remain prefix-eligible | Yes | `inherited-upstream-fix` (partial) + `downstream-fix-required` | M06 | `coworker/permissions.py` | dangerous-bare-command corpus | Shell stays always-ask | Upstream widens the executor set |
-| OW-SEC-014 | P1 | Session / conversation persistence must not allow path traversal out of the state directory | `coworker/conversations.py` | Yes | *assessed in M06* | M06 | `coworker/conversations.py` | traversal fixtures | — | — |
-| OW-SEC-015 | P0 | The durable SQLite audit trail persists raw tool results: `result_preview` is stringified and truncated with **no** redaction, so email bodies, HTML, environment output and tokens land on disk | `audit.py` `_sanitize_args` covers arguments only; `result_preview` = `_truncate(str(...))` | Yes | `downstream-fix-required` | M07 | `coworker/audit.py` | persisted-SQLite-row redaction tests | High-sensitivity connectors OFF | Upstream sanitizes results |
-| OW-SEC-016 | P0 | Credentials persist as a `0600` plaintext JSON file; no native OS credential storage | `SecretStore` is file-backed by design ("a Keychain backend can swap in later") | Yes | `downstream-fix-required` | M07 | `coworker/secrets.py` | Keychain round-trip + transactional migration tests | High-sensitivity connectors OFF unless native round-trip passes | Upstream ships a native backend |
-| OW-SEC-017 | P0 | Desktop isolation: (a) Tauri application CSP is `null`; (b) artifact previews must not share the privileged app origin | (a) `"csp": null` in `tauri.conf.json` — **open**; (b) fixed upstream (OPE-91): `sandbox="allow-scripts"` without `allow-same-origin` plus an injected `default-src 'none'` artifact CSP | Yes | `downstream-fix-required` (a) + `inherited-upstream-fix` (b) | M08 | `surfaces/gui/src-tauri/tauri.conf.json`, `surfaces/gui/src/components/RightRail.tsx` | CSP assertion + sandbox/parent/token E2E | Active HTML preview OFF until green | Upstream sets a non-null CSP |
-| OW-REL-001 | P1 | Small JSON-backed stores load with bare `json.loads` and write in place; one truncated file bricks startup | e.g. `InboxRouting._load` / `._save` and peers | Yes | `downstream-fix-required` | M09 | `coworker/jsonstate.py` (new) + migrated stores | corruption / atomicity / recovery tests | Reliable daily use | Upstream adopts atomic persistence |
+| OW-SEC-009 | P0 | MCP OAuth discovery / registration / token / authorization endpoints are fetched without address validation; hostile MCP metadata can point them at loopback, RFC1918 or `169.254.169.254` | `coworker/mcp/oauth.py` builds and fetches `/.well-known/...` with a bare `httpx.AsyncClient`; `web/guard.py` is not imported | Yes | **CLOSED** `downstream-fix-required` | M05 | `coworker/mcp/oauth.py`, `coworker/web/guard.py`, `coworker/capabilities.py`, `coworker/mcp/client.py` | `tests/test_mcp_network_guard.py` | Remote MCP still OFF (gate at the transport) | Upstream routes MCP OAuth through the address guard |
+| OW-SEC-010 | P0 | Browser navigation SSRF: only the model-supplied URL is pre-checked; redirect landing is *detected* after the request leaves, and JS / meta-refresh hops are unchecked | `check_url` pre-check + `redirect_refusal` post-check in `browser_automation.py` | Yes | **ACCEPTED-AS-GATED** `inherited-upstream-fix` (partial) + `disabled-by-capability-gate` | M05 | `coworker/connectors/browser_automation.py`, `coworker/capabilities.py` | `tests/test_mcp_network_guard.py` browser section | Browser automation OFF — detection, not prevention | A per-hop request proxy lands |
+| OW-SEC-011 | P0 | Granted workspace roots must bound every path-bearing operation, not just canonical file writes | `PermissionEngine` scopes `WRITE_LOCAL` writes and read-only-grant read targets against roots | Yes | **CLOSED** `inherited-upstream-fix` + downstream shell-path scoping | M06 | `coworker/permissions.py` | `tests/test_files_shell_confinement.py` §1, §2, §5 | — | Never remove the corpus |
+| OW-SEC-012 | P0 | Browser upload and screenshot bypass root scoping because they classify EXTERNAL, not WRITE_LOCAL | Fixed upstream (OPE-122): `_readable_source` / `_writable_target` resolve inside granted roots | Yes | **CLOSED** `inherited-upstream-fix` (corpus locked) | M06 | `coworker/connectors/browser_automation.py` | `tests/test_files_shell_confinement.py` §4 | — | Never remove the corpus |
+| OW-SEC-013 | P0 | An allowlist entry on a bare program grants arbitrary execution through its arguments | Upstream blocks `_ARG_EXECUTORS`, inline-code interpreter flags, and `_DANGEROUS_FLAGS`. **Gap:** a bare interpreter running a *script file* (`python setup.py`) and package managers (`npm`, `pip`, `yarn`, `pnpm`, `cargo`, `go`, `make`, `gradle`) remain prefix-eligible | Yes | **CLOSED** `inherited-upstream-fix` (partial) + `downstream-fix-required` | M06 | `coworker/permissions.py`, `tests/test_command_matching.py` | `tests/test_files_shell_confinement.py` §3 (22 dangerous + 5 benign) | Shell stays always-ask | Upstream widens the executor set |
+| OW-SEC-014 | P1 | Session / conversation persistence must not allow path traversal out of the state directory | `coworker/conversations.py` | Yes | **CLOSED** `not-reproducible-with-evidence` | M06 | `coworker/conversations.py` (unchanged) | `tests/test_files_shell_confinement.py` §6 | — | Never remove the corpus |
+| OW-SEC-015 | P0 | The durable SQLite audit trail persists raw tool results: `result_preview` is stringified and truncated with **no** redaction, so email bodies, HTML, environment output and tokens land on disk | `audit.py` `_sanitize_args` covers arguments only; `result_preview` = `_truncate(str(...))` | Yes | **CLOSED** `downstream-fix-required` | M07 | `coworker/audit.py` | `tests/test_audit_secrets.py` §1-2 (reads the persisted rows) | High-sensitivity connectors OFF | Upstream sanitizes results |
+| OW-SEC-016 | P0 | Credentials persist as a `0600` plaintext JSON file; no native OS credential storage | `SecretStore` is file-backed by design ("a Keychain backend can swap in later") | Yes | **PARTIAL — gated** `downstream-fix-required` | M07 | `coworker/secrets.py` | `tests/test_audit_secrets.py` §3 (migration logic proven; macOS round-trip UNVERIFIED here) | High-sensitivity connectors OFF — the native round-trip has not been run on the launch platform | Upstream ships a native backend |
+| OW-SEC-017 | P0 | Desktop isolation: (a) Tauri application CSP is `null`; (b) artifact previews must not share the privileged app origin | (a) `"csp": null` in `tauri.conf.json` — **open**; (b) fixed upstream (OPE-91): `sandbox="allow-scripts"` without `allow-same-origin` plus an injected `default-src 'none'` artifact CSP | Yes | **CLOSED (shape) / gated (functional)** | M08 | `surfaces/gui/src-tauri/tauri.conf.json`, `surfaces/gui/src/csp.test.ts`, `surfaces/gui/e2e/{artifacts.spec.ts,fixtures.ts}` | 7 CSP shape assertions + extended sandbox/parent/token/IPC E2E | CSP functional check needs a macOS Tauri build — BLOCKED here | Upstream sets a non-null CSP |
+| OW-REL-001 | P1 | Small JSON-backed stores load with bare `json.loads` and write in place; one truncated file bricks startup | e.g. `InboxRouting._load` / `._save` and peers | Yes | **CLOSED** `downstream-fix-required` | M09 | `coworker/jsonstate.py`, `coworker/{inbox,inbox_routing,mentions,unrouted,unattended,overrides}.py` | `tests/test_durable_state.py` (72 cases) | Reliable daily use | Upstream adopts atomic persistence |
 
 ## P0 coverage
 
@@ -207,3 +207,188 @@ still runs. A policy that raises is caught and treated as *not* an allow.
   still leaves the untrusted-context rule standing.
 - Local reads are not ingestion sources, inheriting upstream's documented trade-off: a
   poisoned file already in the workspace produces no marker. Recorded, not papered over.
+
+
+## M05 closure evidence — MCP + Browser Network Guard
+
+| Acceptance boolean | Result | Evidence |
+|---|---|---|
+| MCP discovery / authorization / registration / token endpoints require acceptable schemes and public destinations | PASS | 21 blocked-endpoint rows; 6 hostile-metadata documents |
+| Browser public→private redirects blocked before content becomes readable | PASS (detection) | 4 redirect rows; see the honesty note below |
+| Loopback, RFC1918, link-local, cloud metadata, unsafe schemes fail mandatory tests | PASS | includes IPv6 loopback, IPv4-mapped loopback, CGNAT, multicast, reserved |
+| Legitimate public HTTPS MCP OAuth still completes | PASS | `test_legitimate_public_https_endpoint_is_allowed`, `test_auth_flow_passes_a_clean_request_through` |
+
+**Mandatory private / link-local / unsafe-scheme cases failing: 0 / 54.**
+
+### One chokepoint, not four patches
+
+Upstream already had a mature address guard (`coworker/web/guard.py`: loopback, RFC1918,
+link-local, CGNAT, multicast, reserved, IPv4-mapped, per-hop redirect walking, and
+connection pinning that closes the DNS-rebinding window). It was wired into `web_fetch`,
+`integration_tools` and `browser_automation` — and **not** into `coworker/mcp/oauth.py`,
+which fetched `/.well-known/...` with a bare `httpx.AsyncClient` and then followed whatever
+endpoints the returned metadata named.
+
+The guard is now applied at `async_auth_flow`, the generator through which the MCP SDK
+routes discovery, dynamic client registration, the code exchange and every silent refresh.
+Vetting each request it yields covers server-supplied endpoints without reimplementing the
+SDK's flow or tracking its internals version by version. Three narrower doors are guarded
+too: the module's own well-known fetch, the authorization URL handed to the *system*
+browser, and the configured server URL.
+
+`check_endpoint` adds one rule to `check_url`: **https only**. Plain HTTP is fine for
+`web_fetch` and never fine for a token exchange.
+
+### Construction vs. point of use
+
+`build_auth` validates `scheme_only` — scheme and any literal IP, but no DNS. Resolving a
+NAME at construction would let a transient DNS failure become a hard construction failure
+while buying nothing, because every request is vetted again at the point it actually leaves.
+Point-of-use recheck is the rule that matters; a construction-time resolve is a weaker copy
+of it.
+
+### OW-SEC-010 is DETECTION, and the evidence says so
+
+`redirect_refusal` runs **after** the request has left the machine. It stops the agent
+reading or interacting with the landed page; it does not stop the request, and later
+JavaScript- or meta-refresh-driven navigation is unchecked. Closing that needs a proxy that
+vets every hop. Until then `browser_automation` is OFF, and no release evidence may claim
+SSRF closure for that surface.
+
+## M06 closure evidence — Files + Shell Confinement
+
+| Acceptance boolean | Result | Evidence |
+|---|---|---|
+| File, browser upload/screenshot, attachment, and shell path access cannot escape granted roots | PASS | 6 shell-escape rows, 5 browser rows, 3 write-escape rows |
+| Interpreters, package managers and exec wrappers never gain arbitrary authority from a bare allowlist entry | PASS | 22 dangerous-command rows |
+| Symlink and Windows path cases pass | PASS | `test_a_symlink_pointing_out_of_the_root_does_not_escape`, backslash-traversal rows |
+| In-root benign operations remain usable | PASS | 4 benign shell rows, 5 specific-rule rows, second-root row |
+
+**Path escapes: 0. Dangerous bare-command automatic executions: 0. (76 cases.)**
+
+### The two real gaps
+
+Upstream's engine was already strong — `_ARG_EXECUTORS`, inline-code interpreter flags,
+`find -exec`/`-delete`, protected settings paths, write scoping, and root checks on the
+read-only session grant. Two holes remained:
+
+1. **An allowlist entry vetted what a command did, not what it touched.** `cat` on the
+   allowlist auto-read `~/.aws/credentials` and any other repository's history. The
+   self-protection floor does not catch it — that floor guards a fixed set of settings
+   files, not the granted roots. Root scoping now applies to an allowlisted command's path
+   operands, and an out-of-root path falls through to **approval** rather than denying, so
+   the operator can still say yes once.
+2. **A bare delegating program was not a decision about anything.** `python` covered
+   `python attacker.py`; `npm` covered `npm install <anything>`. `python -c` and
+   `python evil.py` differ only in where the code is stored. A rule that names a
+   subcommand or script still auto-runs — a gate people route around is not a gate.
+
+`_path_operands` unions a POSIX **and** a non-POSIX `shlex` parse: POSIX mode is how the
+command really splits on macOS/Linux but eats backslashes, so `..\..\etc\passwd` arrives
+as `....etcpasswd` with no separator left to notice.
+
+### One upstream test was tightened, not weakened
+
+`test_interpreter_without_inline_code_is_still_eligible` asserted that a bare `python` rule
+covers `python script.py` — the exact behaviour OW-SEC-013 exists to remove. It is replaced
+by `test_a_bare_interpreter_entry_does_not_cover_a_script`, which asserts the stricter
+contract **and** that a rule naming the script still works.
+
+### OW-SEC-014 was not reproducible
+
+`ConversationStore._file` already rejects any id that is not a safe path component and
+re-confirms the resolved parent. 15 crafted ids are now locked in.
+
+## M07 closure evidence — Audit + Secrets
+
+| Acceptance boolean | Result | Evidence |
+|---|---|---|
+| Email bodies, environment secret values, access tokens, API keys and HTML do not persist in audit previews | PASS | 18 sensitive payloads, each asserted against the **persisted SQLite row** |
+| Audit rows still identify tool, stage, resource, approval origin and call ID | PASS | `test_the_row_still_identifies_the_action`, `test_structure_survives_redaction` |
+| macOS secret backend uses native storage for the launch platform | **IMPLEMENTED, UNVERIFIED** | `KeychainBackend` shells out to macOS `security`; it cannot be exercised on this Linux host |
+| Migration rollback does not destroy the only credential copy | PASS | write → **read-back verify** → retire by *rename*; 3 failure-path tests |
+
+**Secret / body samples in persisted rows: 0 / 18.**
+
+### Truncation is not redaction
+
+The baseline persisted `_truncate(str(result))`. A 500-character prefix of an email body is
+still an email body, and a token shorter than the limit survives truncation whole. Redaction
+now runs on the **structured** result, before flattening — and the corpus asserts against the
+row read back out of SQLite, because a sanitizer that ran on the way to the UI and not on
+the way to disk would pass an in-memory test and still leave the bytes on the disk.
+
+### The migration ordering IS the control
+
+Write, verify by reading back, and only then retire the legacy file — by **rename**, never
+by delete. At no point does exactly one copy of a credential exist. Any failure raises
+`MigrationError` with the legacy file untouched, so the rollback is "do nothing".
+
+### Honest limit
+
+`KeychainBackend.available()` returns False off macOS, so this build runs on the file
+backend and `SecretStore.backend_name` reports `"file"`. **The native round-trip named in
+the M07 acceptance criteria has not been executed.** `high_sensitivity_connectors` therefore
+stays OFF, which is the documented consequence rather than an oversight.
+
+## M08 closure evidence — Artifact Isolation + CSP
+
+| Acceptance boolean | Result | Evidence |
+|---|---|---|
+| HTML preview cannot access `parent.document` or the OpenWorker API token | PASS | E2E probe: parent blocked, token blocked, IPC blocked, own storage denied |
+| HTML preview cannot exfiltrate through unrestricted subresources | PASS | E2E probe: network blocked (upstream's injected `default-src 'none'`) |
+| Tauri CSP is non-null and as restrictive as functional requirements allow | PASS (shape) | 7 assertions in `surfaces/gui/src/csp.test.ts` |
+| Spreadsheet preview remains OFF until M02 passes | PASS | `capabilities.ts`; M02 is green and the capability is still OFF pending authorization |
+
+### What changed and what did not
+
+Upstream had already removed `allow-same-origin` and injected a `default-src 'none'` CSP
+into artifact `srcdoc`. The E2E probe is extended to attempt the two things a hostile report
+would actually want — the app's launch token via `parent.localStorage`, and the Tauri IPC
+bridge — and both are unreachable because the frame has an opaque origin.
+
+The application CSP was `null`. It is now `default-src 'self'` with `object-src 'none'`,
+`base-uri 'self'`, `form-action 'none'`, `frame-ancestors 'none'`, no remote script origin,
+no `unsafe-eval`, and `connect-src` limited to the local sidecar and Tauri IPC.
+
+### Why `script-src` keeps `'unsafe-inline'`
+
+Two reasons, and neither is convenience. `index.html` runs a pre-paint theme script; more
+importantly, `srcdoc` frames **inherit the parent policy**, so removing it here would
+silently kill the inline scripts report interactivity needs — inside a frame that is already
+opaque-origin and already carries its own `default-src 'none'`. Recorded because "as
+restrictive as functional requirements allow" is the actual bar, and this is where it sits.
+
+### Honest limit
+
+`tauri.conf.json` is applied by the **Tauri webview**. The E2E suite runs against Vite in a
+plain browser, so these assertions lock the policy's *shape*, not its behaviour in the app.
+A functional CSP check needs a desktop build on the launch platform — BLOCKED in this
+environment, and recorded as such in `RELEASE_EVIDENCE.md`.
+
+## M09 closure evidence — Durable State
+
+| Acceptance boolean | Result | Evidence |
+|---|---|---|
+| Critical JSON stores use the shared atomic write helper | PASS | inbox, inbox_routing, mentions, unrouted, unattended, risk_overrides |
+| Truncated / corrupt state cannot prevent startup | PASS | 9 corruptions x 6 stores = 54 construction cases |
+| Recovery preserves the bad file for inspection without exposing sensitive content | PASS | quarantine keeps the bytes; the event carries store + reason + path only |
+| Kill / interruption tests pass repeatably | PASS | interrupted-write, concurrent writers/readers, repeat-recovery |
+
+**(72 cases.)**
+
+### A defect the corpus found
+
+`"items"` is *valid JSON* and a valid **string**. Guarding only against `JSONDecodeError`
+would have let it through, and every store would then call `.get` on a `str` and raise out
+of a boot-time constructor — the exact failure the module exists to prevent. `read_json_safe`
+therefore validates the SHAPE the caller can use, not merely that the bytes parse.
+
+### Recovery, not repair
+
+The obvious repair — catch the error and start empty — passes "startup survives" and fails
+the half that matters: it silently overwrites the only evidence, so nobody can tell
+afterwards whether it was a disk-full crash or something worth investigating. Corrupt files
+are renamed, never deleted, and the recovery event carries the store name, the reason and
+the quarantine path — never the content, which would make the log a second copy of the thing
+it is reporting.

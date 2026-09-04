@@ -16,6 +16,8 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from .jsonstate import read_json_safe, write_json_atomic
 from typing import Optional
 
 
@@ -37,18 +39,21 @@ class UnroutedStore:
         self._load()
 
     def _load(self) -> None:
-        if self.path and self.path.is_file():
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            self._items = [UnroutedItem(**raw) for raw in data.get("items", [])]
+        if not self.path:
+            return
+        data = read_json_safe(self.path, default={}, store="unrouted")
+        items = []
+        for raw in (data or {}).get("items", []):
+            try:
+                items.append(UnroutedItem(**raw))
+            except TypeError:
+                continue
+        self._items = items
 
     def _save(self) -> None:
         if not self.path:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps({"items": [asdict(i) for i in self._items]}, indent=2),
-            encoding="utf-8",
-        )
+        write_json_atomic(self.path, {"items": [asdict(i) for i in self._items]})
 
     def record(self, source: str, sender: str, text: str, reason: str) -> UnroutedItem:
         item = UnroutedItem(

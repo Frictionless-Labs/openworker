@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+
+from .jsonstate import read_json_safe, write_json_atomic
 from typing import Optional
 
 
@@ -19,14 +21,14 @@ class UnattendedRegistry:
         self.path = Path(path) if path else None
         self._lock = threading.Lock()
         self._flags: dict[str, bool] = {}
-        if self.path and self.path.is_file():
-            self._flags = dict(json.loads(self.path.read_text(encoding="utf-8")))
+        if self.path:
+            loaded = read_json_safe(self.path, default={}, store="unattended")
+            self._flags = dict(loaded) if isinstance(loaded, dict) else {}
 
     def _save(self) -> None:
         if not self.path:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._flags, indent=2), encoding="utf-8")
+        write_json_atomic(self.path, self._flags)
 
     def is_unattended(self, session_id: str) -> bool:
         return bool(self._flags.get(session_id, False))
