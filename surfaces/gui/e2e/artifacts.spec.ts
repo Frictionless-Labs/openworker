@@ -29,6 +29,14 @@ test("HTML artifact renders sandboxed: scripts run, parent and network stay seal
   await expect(probe).toContainText("script ran in sandbox"); // interactivity works
   await expect(probe).toContainText("parent blocked"); // null origin held
   await expect(probe).toContainText("network blocked"); // CSP stopped the exfil img
+  // OWH M08 (OW-SEC-017): the two things a hostile report would actually want.
+  await expect(probe).toContainText("token blocked"); // no parent localStorage
+  await expect(probe).toContainText("ipc blocked"); // no Tauri bridge
+  await expect(probe).toContainText("opaque origin"); // its own storage is denied too
+  await expect(probe).not.toContainText("TOKEN LEAKED");
+  await expect(probe).not.toContainText("TOKEN STORE REACHED");
+  await expect(probe).not.toContainText("IPC REACHED");
+  await expect(probe).not.toContainText("OWN STORAGE REACHED");
   await expect(page).not.toHaveTitle("ESCAPED");
 });
 

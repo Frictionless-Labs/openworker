@@ -1218,6 +1218,24 @@ export async function mockApi(page: import("@playwright/test").Page) {
           "  }",
           "</script>",
           '<img src="https://evil.example/exfil.png" onerror="document.getElementById(\'probe\').textContent += \' · network blocked\'">',
+          // OWH M08 (OW-SEC-017): the two things a hostile report would actually want —
+          // the app's launch token and the Tauri IPC bridge. Both must be unreachable
+          // because the frame has an opaque origin (no allow-same-origin).
+          "<script>",
+          "  var p = document.getElementById('probe');",
+          "  try {",
+          "    var t = window.parent.localStorage.getItem('openworker-token');",
+          "    p.textContent += t ? ' · TOKEN LEAKED' : ' · TOKEN STORE REACHED';",
+          "  } catch (e) { p.textContent += ' · token blocked'; }",
+          "  try {",
+          "    var ipc = window.parent.__TAURI__ || window.parent.__TAURI_INTERNALS__;",
+          "    p.textContent += ' · IPC REACHED';",
+          "  } catch (e) { p.textContent += ' · ipc blocked'; }",
+          "  try {",
+          "    localStorage.setItem('x', '1');",
+          "    p.textContent += ' · OWN STORAGE REACHED';",
+          "  } catch (e) { p.textContent += ' · opaque origin'; }",
+          "</script>",
         ].join("\n"),
       });
     }
