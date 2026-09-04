@@ -1,35 +1,56 @@
-# App CI — the coworker Python suite, the GUI unit tests, and the hermetic
-# Playwright e2e suite (mocked /v1 + WS; no model or network needed).
+# App CI + the Frictionless hardening release gate (OWH M10 / OW-REL-001 scope).
+#
+# Every third-party action is pinned to a commit SHA, not a tag: a tag is a mutable pointer
+# in someone else's repository, and "we pin our dependencies" means nothing if the thing
+# that installs them can be swapped underneath. The comment after each SHA records which
+# release it was.
+#
+# A scanner outage is a FAILED job, never a pass. Retry is allowed; a silent waiver is not.
 
 name: CI
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
+env:
+  # Pinned tool versions. Same reasoning as the action SHAs: a floating scanner is a
+  # floating result, and a release gate that changes under you is not a gate.
+  UV_VERSION: "0.8.17"
+  PIP_AUDIT_VERSION: "2.10.1"
+  DETECT_SECRETS_VERSION: "1.5.0"
+  CYCLONEDX_PY_VERSION: "7.3.1"
+  CYCLONEDX_NPM_VERSION: "6.0.1"
+  CARGO_AUDIT_VERSION: "0.22.2"
+
 jobs:
-  pytest:
+  backend:
+    name: Backend tests (locked)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
       # OW-SEC-001: the runtime graph is resolved from the committed uv.lock, never
-      # re-resolved at CI time. uv itself is version-pinned from PyPI rather than
-      # installed through a third-party action, so nothing in this job floats.
+      # re-resolved at CI time. uv itself is version-pinned from PyPI rather than installed
+      # through a floating third-party action, so nothing in this job drifts.
       - name: Install uv (pinned)
         run: |
           python -m pip install --upgrade pip
-          pip install "uv==0.8.17"
+          pip install "uv==${UV_VERSION}"
       - name: Verify the Python lock is current
         run: uv lock --check
       - name: Test (locked resolution)
         run: uv run --locked --extra messaging --extra dev --extra bedrock pytest tests -q
 
   gui-unit:
+    name: GUI unit + typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 20
           cache: npm
@@ -43,12 +64,16 @@ jobs:
       - name: Unit tests
         working-directory: surfaces/gui
         run: npm test
+      - name: Build
+        working-directory: surfaces/gui
+        run: npm run build
 
   gui-e2e:
+    name: GUI E2E
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 20
           cache: npm
@@ -62,3 +87,267 @@ jobs:
       - name: e2e
         working-directory: surfaces/gui
         run: npm run e2e
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: |
+            stt
+            surfaces/gui/src-tauri
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev patchelf
+      - name: STT tests
+        run: cargo test --manifest-path stt/Cargo.toml
+      - name: Tauri check
+        run: cargo check --manifest-path surfaces/gui/src-tauri/Cargo.toml
+
+  security-regression:
+    name: Security regression families
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install uv (pinned)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "uv==${UV_VERSION}"
+      # Named FILE BY FILE on purpose. Running the whole suite would still cover these, but
+      # it would also let a corpus be deleted or renamed and stay green — the exact move
+      # this gate exists to make impossible. A missing file fails collection, loudly.
+      - name: Approval authority (OW-SEC-003/004/005)
+        run: uv run --locked --extra messaging --extra dev pytest tests/test_approval_authority.py -q
+      - name: Provenance + egress (OW-SEC-006/007/008)
+        run: uv run --locked --extra messaging --extra dev pytest tests/test_provenance_egress.py -q
+      - name: Network / MCP SSRF (OW-SEC-009/010)
+        run: uv run --locked --extra messaging --extra dev pytest tests/test_mcp_network_guard.py -q
+      - name: Files + shell confinement (OW-SEC-011/012/013/014)
+        run: uv run --locked --extra messaging --extra dev pytest tests/test_files_shell_confinement.py -q
+      - name: Audit redaction + secrets (OW-SEC-015/016)
+        run: uv run --locked --extra messaging --extra dev pytest tests/test_audit_secrets.py -q
+      - name: Durable state recovery (OW-REL-001)
+        run: uv run --locked --extra messaging --extra dev pytest tests/test_durable_state.py -q
+      - name: Command matching (OW-SEC-013)
+        run: uv run --locked --extra messaging --extra dev pytest tests/test_command_matching.py -q
+
+  capability-defaults:
+    name: Capability defaults are OFF
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: surfaces/gui/package-lock.json
+      - name: Install uv (pinned)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "uv==${UV_VERSION}"
+      # A capability turned on by an edit that nobody reviewed is the failure this catches.
+      # Both halves of the table are checked — a build whose backend says OFF and whose UI
+      # says ON is not a build anyone reasoned about.
+      - name: Backend capability table
+        run: uv run --locked --extra dev pytest tests/test_capability_defaults.py -q
+      - name: GUI capability table
+        working-directory: surfaces/gui
+        run: |
+          npm ci
+          npx vitest run src/capabilities.test.ts src/csp.test.ts
+
+  supply-chain:
+    name: Supply chain (locks + SCA)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: surfaces/gui/package-lock.json
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - name: Install uv (pinned)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "uv==${UV_VERSION}"
+      - name: Python lock is current
+        run: uv lock --check
+      - name: Python vulnerabilities (pip-audit)
+        run: |
+          pip install "pip-audit==${PIP_AUDIT_VERSION}"
+          uv export --locked --no-emit-project --format requirements-txt -o /tmp/requirements.txt
+          pip-audit --strict --requirement /tmp/requirements.txt
+      - name: npm lock is honoured, and the tree is clean
+        working-directory: surfaces/gui
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=high
+      # OW-SEC-002: the advisories must be absent from the ACTIVE path, not merely fixed
+      # somewhere upstream. npm's `xlsx` is frozen at the vulnerable 0.18.5, so its presence
+      # anywhere in the resolved tree is a release blocker on its own.
+      - name: SheetJS advisories are absent from the active path
+        working-directory: surfaces/gui
+        run: |
+          if grep -q '"node_modules/xlsx"' package-lock.json; then
+            echo "::error::xlsx is back in the resolved tree (GHSA-4r6h-8v6p-xvw6 / GHSA-5pgg-2g8v-p4x9)"
+            exit 1
+          fi
+      - name: Rust vulnerabilities (cargo-audit)
+        run: |
+          cargo install cargo-audit --locked --version "${CARGO_AUDIT_VERSION}"
+          cargo audit --file stt/Cargo.lock
+          cargo audit --file surfaces/gui/src-tauri/Cargo.lock
+
+  secret-scan:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      # A pinned scanner rather than a third-party action: the same supply-chain argument,
+      # one less mutable dependency. GitHub's own push-protection secret scanning is a
+      # repository setting and complements this; it does not replace it, because it does
+      # not run on the tree as a required check.
+      # This repository's security corpora deliberately contain credential-SHAPED strings —
+      # a fixture proving that an audit row redacts a Slack token has to contain something
+      # Slack-token-shaped. So the gate is "nothing NEW since the reviewed baseline", not
+      # "no hits": a permanently red check is one people learn to ignore.
+      #
+      # `detect-secrets scan --baseline` is deliberately NOT used, because it rewrites the
+      # baseline in place and exits 0 — absorbing a real new secret instead of reporting it.
+      - name: detect-secrets (pinned)
+        run: |
+          pip install "detect-secrets==${DETECT_SECRETS_VERSION}"
+          detect-secrets scan \
+            --exclude-files 'package-lock\.json$' \
+            --exclude-files 'uv\.lock$' \
+            --exclude-files 'Cargo\.lock$' \
+            --exclude-files '^surfaces/gui/dist/' \
+            > /tmp/secrets.json
+          python3 scripts/check_new_secrets.py /tmp/secrets.json .secrets.baseline
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript, actions, rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: System dependencies (rust build)
+        if: matrix.language == 'rust'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev patchelf
+      - uses: github/codeql-action/init@fddeee1a7ece751b577e409a89057319e3172939 # v4
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+      - uses: github/codeql-action/autobuild@fddeee1a7ece751b577e409a89057319e3172939 # v4
+      - uses: github/codeql-action/analyze@fddeee1a7ece751b577e409a89057319e3172939 # v4
+        with:
+          category: /language:${{ matrix.language }}
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/dependency-review-action@e7aeea1772ec01da74cafda11c5caa463520ca59 # v3
+        with:
+          fail-on-severity: high
+
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 20
+      - name: Generate CycloneDX SBOMs
+        run: |
+          mkdir -p sbom
+          pip install "uv==${UV_VERSION}" "cyclonedx-bom==${CYCLONEDX_PY_VERSION}"
+          uv export --locked --no-emit-project --format requirements-txt -o /tmp/requirements.txt
+          cyclonedx-py requirements /tmp/requirements.txt --output-file sbom/python.cdx.json
+          (cd surfaces/gui && npm ci)
+          npx --yes "@cyclonedx/cyclonedx-npm@${CYCLONEDX_NPM_VERSION}" \
+            --package-lock-only \
+            --output-file "$GITHUB_WORKSPACE/sbom/npm.cdx.json" \
+            surfaces/gui/package.json
+          # Rust: the lockfiles ARE the component list, and shipping them verbatim beats
+          # generating a partial SBOM from a tool the release graph does not otherwise need.
+          cp stt/Cargo.lock sbom/stt.Cargo.lock
+          cp surfaces/gui/src-tauri/Cargo.lock sbom/tauri.Cargo.lock
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom/
+          if-no-files-found: error
+
+  release-gate:
+    name: Release gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - backend
+      - gui-unit
+      - gui-e2e
+      - rust
+      - security-regression
+      - capability-defaults
+      - supply-chain
+      - secret-scan
+      - codeql
+      - sbom
+    steps:
+      # One check to require in branch protection, and one place that states the rule: a
+      # skipped or errored security job is NOT a pass. A scanner outage can be retried; it
+      # cannot be waived here, and a time-bounded human exception may never cover a
+      # reachable P0 in enabled scope.
+      - name: Every mandatory gate must have succeeded
+        run: |
+          results='${{ toJSON(needs) }}'
+          echo "$results"
+          python3 - "$results" <<'PY'
+          import json, sys
+          needs = json.loads(sys.argv[1])
+          bad = {n: v["result"] for n, v in needs.items() if v["result"] != "success"}
+          if bad:
+              for name, result in sorted(bad.items()):
+                  print(f"::error::gate '{name}' did not pass: {result}")
+              sys.exit(1)
+          print(f"all {len(needs)} mandatory gates passed")
+          PY

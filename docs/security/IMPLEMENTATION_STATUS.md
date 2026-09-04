@@ -5,13 +5,13 @@ Read this file first in any resumed session, after `CLAUDE.md`, `SPEC.md`, and `
 | Field | Value |
 |---|---|
 | Baseline | `5bc10d928e0b64aae74313349a3b17bd19643ae2` on `claude/openworker-hardened-adoption-m7iwq6` |
-| Phase | GUIDE |
-| Module | M03 Approval Authority — **PASS** |
-| Changed files | M02: `uv.lock`, `pyproject.toml`, `.github/workflows/{ci,release}.yml`, `surfaces/gui/package.json`, `surfaces/gui/package-lock.json`, `surfaces/gui/playwright.config.ts`, `surfaces/gui/src/capabilities.ts`, `surfaces/gui/src/sheet/{parser,testWorkbook,parser.test}.ts`, `surfaces/gui/src/components/RightRail.tsx`, `surfaces/gui/src/locales/{en,zh}.json` · M03: `coworker/inbox.py`, `coworker/inbox_routing.py`, `coworker/server/manager.py`, `tests/test_approval_authority.py` |
-| Tests | pytest **2039 passed, 1 skipped, 0 failed** · GUI unit **198/198** · GUI E2E **221/221** · `npx tsc --noEmit` clean · `npm run build` OK · `cargo test stt` **4 passed** · `cargo check` Tauri OK · `uv lock --check` clean · `npm audit --omit=dev` **0 vulnerabilities** |
-| Findings | CLOSED: OW-SEC-001, OW-SEC-002, OW-SEC-003, OW-SEC-004, OW-SEC-005. Open: OW-SEC-006..017, OW-REL-001 |
+| Phase | DEPLOY — CI gate complete; build / rollback / pilot BLOCKED |
+| Module | M10 CI + Release Gate — **PASS (in-repo); DEPLOY blocked by environment)** |
+| Changed files | See the per-module commits on this branch. M02: `uv.lock`, `pyproject.toml`, `.github/workflows/{ci,release}.yml`, `surfaces/gui/package.json`, `surfaces/gui/package-lock.json`, `surfaces/gui/playwright.config.ts`, `surfaces/gui/src/capabilities.ts`, `surfaces/gui/src/sheet/{parser,testWorkbook,parser.test}.ts`, `surfaces/gui/src/components/RightRail.tsx`, `surfaces/gui/src/locales/{en,zh}.json` · M03: `coworker/inbox.py`, `coworker/inbox_routing.py`, `coworker/server/manager.py`, `tests/test_approval_authority.py` |
+| Tests | pytest **2347 passed, 1 skipped, 0 failed** · GUI unit **219** · GUI E2E **221** · `tsc --noEmit` clean · `npm run build` OK · `cargo test stt` 4 passed · `cargo check` Tauri OK · `uv lock --check` clean · `pip-audit --strict` clean · `npm audit` 0 vulns · secret scan clean vs baseline · SBOMs generated |
+| Findings | 18/18 dispositioned. Closed with tests: OW-SEC-001..015, OW-SEC-017(shape), OW-REL-001. Gated-not-closed: OW-SEC-010 (detection, browser OFF), OW-SEC-016 (native round-trip unverified off macOS) |
 | Decisions | None required from Mikkoh yet |
-| Next step | Implement M04 Provenance + Egress (`TrustOrigin` + egress gate) |
+| Next step | A human runs the macOS build and the native Keychain round-trip (see `RELEASE_EVIDENCE.md` → "What a person must do next") |
 
 ## M01 acceptance booleans
 
@@ -27,13 +27,13 @@ Read this file first in any resumed session, after `CLAUDE.md`, `SPEC.md`, and `
 | M01 Baseline + Patch Ledger | PASS |
 | M02 Supply Chain + Spreadsheet Parser | PASS |
 | M03 Approval Authority | PASS |
-| M04 Provenance + Egress | NOT STARTED |
-| M05 MCP + Browser Network Guard | NOT STARTED |
-| M06 Files + Shell Confinement | NOT STARTED |
-| M07 Audit + Secrets | NOT STARTED |
-| M08 Artifact Isolation + CSP | NOT STARTED |
-| M09 Durable State | NOT STARTED |
-| M10 CI + Release Gate | NOT STARTED |
+| M04 Provenance + Egress | PASS |
+| M05 MCP + Browser Network Guard | PASS (browser gap gated, not closed) |
+| M06 Files + Shell Confinement | PASS |
+| M07 Audit + Secrets | PASS (audit); PARTIAL (native secret round-trip unverified) |
+| M08 Artifact Isolation + CSP | PASS (shape); functional CSP check blocked |
+| M09 Durable State | PASS |
+| M10 CI + Release Gate | PASS in-repo; DEPLOY steps blocked by this environment |
 
 
 ## Environment notes for whoever resumes this
