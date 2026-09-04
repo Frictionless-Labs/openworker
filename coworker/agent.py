@@ -33,7 +33,7 @@ from .memory import (
 )
 from .permissions import Mode, PermissionEngine
 from .project import load_agents_md
-from . import session_facts
+from . import egress, session_facts
 from .roots import RootDir, normalize_roots, render_context
 from .providers import ProviderClient, ProviderRouter
 from .overrides import RiskOverrideStore
@@ -563,6 +563,17 @@ def build_engine(
             allowed_domains=config.allowed_domains,
             workspace=ws,
         )
+    )
+
+    # OW-SEC-007: the egress floor, wired here because it needs BOTH halves — the frozen
+    # known world (just captured) and the live engine (whose turn state it reads on every
+    # check). `KnownWorld.hosts` is the frozen destination set its own docstring reserved
+    # for "one *computed* line, never a list for the model to search"; this is that
+    # computation, and it never enters the model's context.
+    permissions.egress_policy = egress.EgressPolicy(
+        bound_hosts=frozenset(engine.session_facts.world.hosts),
+        bound_targets=engine.bound_targets,
+        turn_origins=engine.turn_origins,
     )
 
     # §1.9: the web_search approval card names the LIVE destination ("Queries go to your

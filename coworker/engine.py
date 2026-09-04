@@ -21,7 +21,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import compaction as _compaction
 from . import provenance
-from . import session_facts
+from . import session_facts, trust
 from . import toolchain as _toolchain
 from .events import Event, EventType
 
@@ -176,6 +176,10 @@ class TurnEngine:
         # compaction above, so the constructor footprint stays put. None ⇒ nothing recorded
         # and behaviour is byte-identical; NOTHING consumes it in v1 either way.
         self.session_facts: Optional[session_facts.SessionFacts] = None
+        # Destinations this session was addressed on (OW-SEC-007). Grows only from an
+        # inbound connector delivery — never from a tool the agent chose to call, which is
+        # what stops an agent from binding its own exfiltration destination.
+        self._bound_targets: set[str] = set()
         # Auto-Approve reviewer (spec Part 8). Set post-construction; None ⇒ Mode.AUTO_APPROVE
         # behaves exactly like INTERACTIVE. Consulted only on decisions the gate marked
         # needs_user, only in AUTO_APPROVE mode, only when the session is attended (an
@@ -309,6 +313,12 @@ class TurnEngine:
         }
         if source is not None:
             message["source"] = source
+            # OW-SEC-006: a connector delivered this turn, so it is external data even
+            # though it arrives in the `user` role. That role assignment is the
+            # confused-deputy step — a channel message rendered as a user turn otherwise
+            # carries the operator's own authority.
+            message[trust.ORIGIN_KEY] = trust.TrustOrigin.UNTRUSTED_EXTERNAL_DATA.value
+            self._note_bound_target(source)
         if display is not None:
             message["_display"] = display
         self.messages.append(message)
@@ -1479,6 +1489,16 @@ class TurnEngine:
         message = _tool_result_message(tool_call, result)
         if display:
             message["_display"] = display
+        # OW-SEC-006: the origin class is computed from the tool's REGISTRATION, never from
+        # the result's content, and is written before the message is stored so it survives
+        # reload. Failed calls brought nothing in, so they carry no untrusted marker.
+        spec = self.registry.get(tool_call.name)
+        origin_class = (
+            trust.origin_for_tool_result(spec.metadata if spec else None)
+            if status == "ok"
+            else trust.TrustOrigin.TRUSTED_SYSTEM
+        )
+        message[trust.ORIGIN_KEY] = origin_class.value
         self.messages.append(message)
         hidden = int((display or {}).get("hidden_by_filters") or 0)
         stripped = int((display or {}).get("hidden_fields") or 0)
@@ -1524,6 +1544,42 @@ class TurnEngine:
                 ),
             },
         )
+
+    # -- trust provenance (OW-SEC-006/007) --------------------------------------
+    def _note_bound_target(self, source: dict[str, Any]) -> None:
+        """Remember the channel this session was addressed on. Replying THERE is answering
+        the person who asked; sending anywhere else is a new destination."""
+        connector = str(source.get("connector") or "")
+        channel_id = str(source.get("channel_id") or "")
+        if connector and channel_id:
+            self._bound_targets.add(f"{connector}:{channel_id}")
+        if channel_id:
+            self._bound_targets.add(channel_id)
+
+    def bound_targets(self) -> frozenset[str]:
+        return frozenset(self._bound_targets)
+
+    def turn_origins(self) -> frozenset["trust.TrustOrigin"]:
+        """Origin classes that entered the CURRENT turn's context.
+
+        Two independent sources, deliberately: the turn's own messages (a connector
+        delivery, and every tool result recorded so far this turn) and upstream's
+        `session_facts` ingestion record. Either alone would have gaps — session_facts is
+        keyed on tool category and does not see connector-delivered turns; the message scan
+        does not see a tool whose result the engine has not appended yet.
+        """
+        origins: set[trust.TrustOrigin] = set()
+        if self.session_facts is not None and self.session_facts.this_turn():
+            origins.add(trust.TrustOrigin.UNTRUSTED_TOOL_RESULT)
+        for msg in reversed(self.messages):
+            origin = trust.origin_for_message(msg)
+            if origin in trust.UNTRUSTED_ORIGINS:
+                origins.add(origin)
+            # Walk back only to the start of this turn: the operator's own instruction
+            # opens it, and content from an EARLIER turn is not what this call derives from.
+            if msg.get("role") == "user" and origin is trust.TrustOrigin.OWNER_INSTRUCTION:
+                break
+        return frozenset(origins)
 
     def _note_ingestion(self, tool_call: ToolCall, status: str) -> None:
         """Record that outside content entered this session, and from where. The fact and
@@ -1985,7 +2041,10 @@ class TurnEngine:
         # (thinking text), and `usage` (token counts) — copying only messages that carry
         # one. Whole `notice` messages (error/interrupted/model-switch markers) are
         # display-only too: dropped entirely.
-        _SIDECARS = ("source", "_display", "ts", "reasoning", "usage")
+        # `_trust_origin` (OW-SEC-006) rides here too: the runtime must be able to read a
+        # message's provenance on reload, and the MODEL must never see it. A visible origin
+        # label would be one more line for injected text to imitate.
+        _SIDECARS = ("source", "_display", "ts", "reasoning", "usage", trust.ORIGIN_KEY)
         # Auto-compaction (OPE-27): everything before the boundary is represented by the
         # compacted block. Outbound-only — the canonical history stays intact — and the
         # block+tail are byte-stable between turns, so prompt caching keeps working.

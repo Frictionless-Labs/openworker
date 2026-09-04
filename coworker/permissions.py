@@ -314,6 +314,12 @@ class PermissionEngine:
     # The write half (RiskOverrideStore.set_trust) — how ApprovalOutcome.ALWAYS_TRUST
     # lands on disk. Kept as an injected callable so this module never imports the store.
     grant_trust: Optional[Callable[[str], None]] = None
+    # OW-SEC-007 egress floor: an `EgressPolicy`-shaped object exposing
+    # `evaluate(tool_name, arguments, risk) -> EgressDecision`. Injected (not imported and
+    # constructed here) because it reads LIVE session state — what entered this turn's
+    # context — which this module has no business knowing about. None → no egress floor,
+    # which is the pre-existing behaviour for the CLI/subagent engines that have no session.
+    egress_policy: Optional[Any] = None
     # Shared, possibly-mutable list of roots (RootDir-like / dicts). When omitted, the single
     # `workspace_root` is the sole writable root (back-compat). Kept by reference and re-read on
     # every check, so runtime add/remove of folders takes effect without rebuilding the engine.
@@ -374,6 +380,28 @@ class PermissionEngine:
             return Decision(
                 False, f"{self.mode.value} mode is read-only", needs_user=False
             )
+
+        # EGRESS FLOOR (OW-SEC-007/008) — placed above write scoping, the persistent-
+        # authority floor, Bypass, and every allowlist, because the escalation it blocks
+        # rides IN on content the agent was told to read and OUT through a destination one
+        # of those allowlists already trusts. A domain grant matches on host alone and is
+        # blind to where the payload came from; that is exactly the gap.
+        #
+        # It only ever tightens: `allow` means "no egress objection" and the normal flow
+        # continues below. `ask` is human_only — the reviewer reads the arguments, and the
+        # question here ("did the operator ever name this destination?") is session state
+        # the reviewer does not hold.
+        if self.egress_policy is not None and (is_egress or risk is RiskClass.EXTERNAL):
+            try:
+                verdict = self.egress_policy.evaluate(tool_name, arguments, risk)
+            except Exception:
+                verdict = None  # a policy fault must not become an open gate OR a hang
+            if verdict is not None and getattr(verdict, "blocks", False):
+                if verdict.action == "deny":
+                    return Decision(False, verdict.reason, needs_user=False)
+                return Decision(
+                    False, verdict.reason, needs_user=True, human_only=True
+                )
 
         # Path scoping for writes (all modes): every path the write touches must land in a
         # writable root. A write whose path can't be located is not scoped-able, so it fails
