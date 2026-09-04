@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .connectors import connector_for_tool
+from .trust import looks_like_secret
 
 _SECRET_KEYS = (
     "token",
@@ -100,7 +101,9 @@ class AuditStore:
                     event.get("status") or "",
                     event.get("approval") or "",
                     json.dumps(args, default=str),
-                    _truncate(str(event.get("result_preview") or "")),
+                    _sanitized_preview(
+                        event.get("result"), event.get("result_preview")
+                    ),
                     _truncate(str(event.get("reason") or "")),
                     _truncate(str(resource or "")),
                     str(event.get("call_id") or ""),
@@ -216,6 +219,96 @@ def _summarize(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _summarize(v) for k, v in list(value.items())[:20]}
     return _truncate(str(value))
+
+
+# Keys whose VALUE is bulk content rather than an identifier. An email body, a fetched
+# page, a file's text: useful to the agent in the moment, and a durable copy of someone's
+# correspondence once it lands in SQLite. The audit trail exists to explain WHO authorised
+# WHAT — not to become a second, unencrypted store of the things the agent read.
+_RESULT_BODY_KEYS = (
+    "body",
+    "content",
+    "html",
+    "text",
+    "snippet",
+    "preview",
+    "message",
+    "value",
+    "env",
+    "environ",
+    "environment",
+)
+
+# Keys that identify the action. Kept verbatim so a row still answers "which resource?"
+# even when everything around it is redacted.
+_RESULT_KEEP_KEYS = (
+    "id",
+    "url",
+    "path",
+    "status",
+    "ok",
+    "error",
+    "count",
+    "name",
+    "subject",
+    "from",
+    "to",
+    "tool",
+    "kind",
+)
+
+_REDACTED = "[redacted]"
+_REDACTED_BODY = "[redacted body]"
+
+
+def _redact_result(value: Any, key: str = "", depth: int = 0) -> Any:
+    """Redact secret- and body-shaped fields from a structured tool result (OW-SEC-015).
+
+    Runs BEFORE flattening and truncating, because truncation is not redaction: a 500-char
+    prefix of an email body is still an email body, and a token shorter than the limit
+    survives it whole.
+
+    Structure is preserved — keys, shapes, list lengths — so a row still shows what came
+    back. Only the values that carry content or credentials are replaced.
+    """
+    if depth > 8:
+        return _REDACTED
+    lk = str(key).lower()
+    if lk and any(sk in lk for sk in _SECRET_KEYS):
+        return _REDACTED
+    if lk and lk not in _RESULT_KEEP_KEYS and any(
+        b == lk or lk.endswith("_" + b) for b in _RESULT_BODY_KEYS
+    ):
+        return _REDACTED_BODY
+    if isinstance(value, dict):
+        return {
+            str(k): _redact_result(v, str(k), depth + 1) for k, v in list(value.items())[:40]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_result(v, key, depth + 1) for v in list(value)[:20]]
+    if isinstance(value, str):
+        return _REDACTED if looks_like_secret(value) else value
+    return value
+
+
+def _sanitized_preview(result: Any, fallback: Any) -> str:
+    """The durable `result_preview` column: redacted, then flattened, then truncated.
+
+    When the caller supplied no structured result there is nothing to walk, so the
+    pre-flattened string is scanned for credential literals and kept otherwise — the
+    conservative half of the same rule.
+    """
+    if isinstance(result, (dict, list, tuple)):
+        redacted = _redact_result(result)
+        try:
+            text = json.dumps(redacted, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(redacted)
+        return _truncate(text)
+    if isinstance(result, str) and result:
+        return _truncate(_REDACTED if looks_like_secret(result) else result)
+    raw = str(fallback or "")
+    return _truncate(_REDACTED if looks_like_secret(raw) else raw)
 
 
 def _resource(tool: str, args: dict[str, Any], result: Any) -> str:
