@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import Optional
+from typing import Iterable, Optional
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 MAX_REDIRECTS = 5
@@ -165,3 +165,76 @@ def get_checked(client, url: str, *, max_redirects: int = MAX_REDIRECTS):
         # address, and a relative Location must stay on the original host.
         seen = urljoin(seen, location)
     raise RuntimeError(f"too many redirects (>{max_redirects})")
+
+
+# -- OAuth / MCP endpoint policy (OWH M05 / OW-SEC-009) --------------------------
+#
+# Same address policy as `check_url`, one notch stricter on scheme. An MCP server's
+# authorization-server metadata is a STRANGER'S CLAIM about where to send a client
+# registration and a token exchange — the confused-deputy shape MCP's own security guidance
+# names. Plain HTTP there would put a bearer token on the wire in cleartext and make the
+# endpoint trivially spoofable on a shared network, so `http://` is refused even for hosts
+# the address policy would otherwise allow.
+#
+# Loopback is refused along with the rest of private space. That is a deliberate narrowing:
+# a locally-run MCP server reachable over stdio needs no OAuth at all, and the alternative —
+# permitting `http://127.0.0.1:…` here — is exactly the bypass hostile metadata would use
+# to point a token exchange at another service on the operator's own machine.
+
+_SAFE_ENDPOINT_SCHEMES = ("https",)
+
+
+def check_endpoint(
+    url: str, *, purpose: str = "endpoint", scheme_only: bool = False
+) -> Optional[str]:
+    """None if this OAuth/MCP endpoint may be contacted, else a refusal reason.
+
+    `purpose` names the hop in the refusal ("token endpoint", "registration endpoint", …)
+    so a rejection says which claim was refused rather than only which address.
+
+    `scheme_only=True` checks the scheme and skips address resolution. It is for
+    CONSTRUCTION-time checks — validating a configured server URL before any request
+    exists. Resolution is deliberately not done there: a DNS blip would otherwise turn a
+    retryable network error into a hard construction failure, and it would buy nothing,
+    because the address policy is applied again at the point of use, on the request that
+    actually leaves (see `mcp/oauth.py::async_auth_flow`). Point-of-use recheck is the rule
+    that matters here; a construction-time resolve is a second, weaker copy of it.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return f"refusing an empty {purpose} URL"
+    scheme = urlsplit(raw).scheme.lower()
+    if scheme not in _SAFE_ENDPOINT_SCHEMES:
+        return (
+            f"refusing {purpose} {raw}: MCP OAuth endpoints must use https "
+            f"(got {scheme or 'no scheme'})"
+        )
+    if scheme_only:
+        # A literal address needs no lookup, so the address policy still applies here —
+        # `scheme_only` skips RESOLUTION, not judgement. Only a name is deferred to the
+        # point of use.
+        host = urlsplit(raw).hostname or ""
+        try:
+            literal = ipaddress.ip_address(host)
+        except ValueError:
+            return None
+        blocked = _blocked_reason(literal)
+        return f"refusing {purpose} {raw}: {blocked}" if blocked else None
+    reason = check_url(raw)
+    if reason:
+        return f"refusing {purpose} {raw}: {reason}"
+    return None
+
+
+def check_endpoints(pairs: "Iterable[tuple[str, str]]") -> Optional[str]:
+    """First refusal across `(purpose, url)` pairs, skipping empty URLs. Fail-closed: a
+    single bad endpoint refuses the whole metadata document, because a client that
+    registered against a hostile registration endpoint is already compromised even if its
+    token endpoint was fine."""
+    for purpose, url in pairs:
+        if not url:
+            continue
+        reason = check_endpoint(str(url), purpose=purpose)
+        if reason:
+            return reason
+    return None

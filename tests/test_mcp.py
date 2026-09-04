@@ -370,6 +370,16 @@ async def test_connect_mcp_http_401_sets_auth_hint(tmp_path, monkeypatch):
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Deny)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
+        # OWH: the http MCP transport is behind the `remote_mcp` capability gate, which
+        # ships OFF (coworker/capabilities.py; tests/test_mcp_network_guard.py asserts
+        # the default and the transport refusal). This test is about the 401 →
+        # "needs sign-in" hint, not about the default, so it enables the capability for
+        # its own duration and leaves the assertion below unchanged.
+        from coworker import capabilities
+
+        monkeypatch.setitem(
+            capabilities.CAPABILITIES, "remote_mcp", (True, "enabled for this test")
+        )
         monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
         _write_json(
             tmp_path / "state" / "mcp.json",

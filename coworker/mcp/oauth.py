@@ -29,6 +29,7 @@ from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
 from ..secrets import SecretStore
+from ..web.guard import check_endpoint, check_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,14 @@ def deliver_callback(code: str, state: Optional[str]) -> bool:
 
 async def _open_browser(url: str) -> None:
     global last_authorize_url, _expected_state
+    # OW-SEC-009: the authorization URL comes from server-supplied metadata and is handed
+    # to the SYSTEM browser, which carries the operator's own cookies and network position.
+    refusal = await asyncio.to_thread(
+        check_endpoint, url, purpose="authorization URL"
+    )
+    if refusal:
+        logger.warning("MCP OAuth destination refused: %s", refusal)
+        raise PermissionError(refusal)
     last_authorize_url = url
     _expected_state = _state_from_url(url)
     import webbrowser
@@ -279,13 +288,78 @@ class _MetadataSeededProvider(OAuthClientProvider):
 
                 pr = urlparse(self.context.server_url)
                 url = f"{pr.scheme}://{pr.netloc}/.well-known/oauth-authorization-server"
+                # OW-SEC-009: this URL derives from a configured server address, which is
+                # still operator input that may name loopback or private space.
+                refusal = await asyncio.to_thread(
+                    check_endpoint, url, purpose="OAuth discovery"
+                )
+                if refusal:
+                    raise PermissionError(refusal)
                 async with httpx.AsyncClient(timeout=10) as c:
                     r = await c.get(url, headers={"Accept": "application/json"})
                 if r.status_code == 200:
                     self.context.oauth_metadata = OAuthMetadata.model_validate(r.json())
-                    self._persist_metadata()
+                    # Never persist a document whose endpoints we would refuse: a cached
+                    # hostile metadata blob would be re-seeded on every later load.
+                    if self._vet_metadata() is None:
+                        self._persist_metadata()
+                    else:
+                        self.context.oauth_metadata = None
             except Exception:
                 pass
+
+    # -- OW-SEC-009: every OAuth destination is validated --------------------
+    #
+    # `async_auth_flow` is the chokepoint: the SDK routes discovery, dynamic client
+    # registration, the authorization-code exchange and every silent refresh through this
+    # one generator. Vetting each request it yields covers endpoints that arrive in
+    # server-supplied metadata — a stranger's claim about where to send our registration and
+    # our token — without reimplementing the SDK's flow or chasing its internals version by
+    # version.
+
+    def _vet_metadata(self) -> Optional[str]:
+        """Refusal reason for the currently-held authorization-server metadata, or None."""
+        md = self.context.oauth_metadata
+        if md is None:
+            return None
+        return check_endpoints(
+            [
+                ("authorization endpoint", str(getattr(md, "authorization_endpoint", "") or "")),
+                ("token endpoint", str(getattr(md, "token_endpoint", "") or "")),
+                ("registration endpoint", str(getattr(md, "registration_endpoint", "") or "")),
+                ("revocation endpoint", str(getattr(md, "revocation_endpoint", "") or "")),
+                (
+                    "introspection endpoint",
+                    str(getattr(md, "introspection_endpoint", "") or ""),
+                ),
+            ]
+        )
+
+    async def async_auth_flow(self, request: Any):
+        flow = super().async_auth_flow(request)
+        try:
+            outbound = await flow.__anext__()
+        except StopAsyncIteration:
+            return
+        while True:
+            reason = await asyncio.to_thread(
+                check_endpoint, str(outbound.url), purpose="OAuth request"
+            )
+            if reason is None:
+                reason = self._vet_metadata()
+            if reason is not None:
+                logger.warning("MCP OAuth destination refused: %s", reason)
+                await flow.aclose()
+                raise PermissionError(reason)
+            try:
+                response = yield outbound
+            except GeneratorExit:
+                await flow.aclose()
+                raise
+            try:
+                outbound = await flow.asend(response)
+            except StopAsyncIteration:
+                return
 
     def _persist_metadata(self) -> None:
         md = self.context.oauth_metadata
@@ -321,6 +395,14 @@ def build_auth(
     the SDK wants a browser authorization it raises InteractiveAuthRequired instead
     of opening one — only explicit connect actions pass True.
     """
+    # OW-SEC-009: refuse at the door rather than at the first request, so a misconfigured
+    # or hostile server address never reaches the SDK's flow at all.
+    # scheme_only: this is construction, not a request. Every request the flow makes is
+    # address-vetted at the point of use in `async_auth_flow`, so resolving here would only
+    # add a way for a DNS blip to become a hard failure.
+    refusal = check_endpoint(server_url, purpose="MCP server URL", scheme_only=True)
+    if refusal:
+        raise PermissionError(refusal)
     metadata = OAuthClientMetadata.model_validate(
         {
             "client_name": CLIENT_NAME,

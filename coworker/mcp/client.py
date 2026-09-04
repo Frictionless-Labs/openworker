@@ -140,6 +140,13 @@ class MCPManager:
         try:
             async with AsyncExitStack() as stack:
                 if server.transport == "http":
+                    # Remote MCP is the one capability whose whole risk surface is a third
+                    # party's claims — tool descriptions, OAuth metadata, results. It stays
+                    # OFF until its gate is proven, and the gate is checked HERE, at the
+                    # transport, so no config path can reach the network around it.
+                    from ..capabilities import require
+
+                    require("remote_mcp")
                     if not server.url:
                         raise ValueError(
                             f"MCP server '{server.name}' is http but has no url"
