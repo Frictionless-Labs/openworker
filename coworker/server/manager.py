@@ -1177,13 +1177,21 @@ class SessionManager:
         if engine is not None:
             self.save(session_id, engine)
 
-    async def resolve_inbox(self, item_id: str, resolution: str) -> bool:
+    async def resolve_inbox(
+        self, item_id: str, resolution: str, *, origin: Optional[str] = None
+    ) -> bool:
         """Resolve an Inbox item from any surface (REST / Slack button / channel reply). If the
         asking agent is still suspended live, that await handles it. Otherwise the process restarted
         (or the engine was evicted) while blocked → durably resume: rebuild the engine from the
-        saved thread and continue the turn."""
+        saved thread and continue the turn.
+
+        `origin` is the resolution's authority ceiling (OW-SEC-005). It defaults to in-app
+        because the REST surface IS the app; transports pass ORIGIN_TRANSPORT explicitly.
+        """
+        from ..inbox import ORIGIN_IN_APP
+
         item = self.inbox.get(item_id)
-        ok = self.inbox.resolve(item_id, resolution)
+        ok = self.inbox.resolve(item_id, resolution, origin=origin or ORIGIN_IN_APP)
         if not ok or item is None:
             return ok
         if not self.is_running(item.session_id):
@@ -3811,6 +3819,29 @@ class SessionManager:
                 return True
         return False
 
+    def _transport_actor_owns_item(self, item, source) -> bool:
+        """May this inbound transport event resolve this PROTECTED item? (OW-SEC-004)
+
+        Deny-first and transport-AGNOSTIC. The slack-only check this replaces meant a
+        Telegram reply — or a button click from any other chat member — carrying a leaked
+        `[ow:<id>]` token resolved an approval with no actor binding at all. A transport
+        earns the right to resolve protected items by having an owner check here; until it
+        does, its replies leave the item pending and the operator answers from the app.
+
+        `source` is the inbound event (or its `.source`): anything exposing platform,
+        user_id, chat_id and optionally team_id.
+        """
+        platform = str(getattr(source, "platform", "") or "")
+        if platform == "slack":
+            return self._slack_actor_owns_item(
+                item,
+                actor_id=str(getattr(source, "user_id", "") or ""),
+                chat_id=str(getattr(source, "chat_id", "") or ""),
+                team_id=getattr(source, "team_id", None),
+            )
+        # No owner identity for this transport — including an empty/unknown platform.
+        return False
+
     def _slack_actor_owns_item(
         self,
         item,
@@ -4534,23 +4565,25 @@ class SessionManager:
         item = self.inbox.get(item_id)
         if item is None:
             return
-        protected_kinds = {"approval", "directory", "plan"}
-        if (
-            getattr(event, "platform", "") == "slack"
-            and item.kind in protected_kinds
-        ):
-            actor_id = str(getattr(event, "user_id", "") or "")
-            if not self._slack_actor_owns_item(
-                item,
-                actor_id=actor_id,
-                chat_id=getattr(event, "chat_id", "") or "",
-                team_id=getattr(event, "team_id", None),
-            ):
+        from ..inbox import ORIGIN_TRANSPORT, PROTECTED_KINDS
+        from ..inbox_routing import TRANSPORT_OUTCOMES
+
+        if item.kind in PROTECTED_KINDS:
+            # OW-SEC-004: every transport, not just Slack.
+            if not self._transport_actor_owns_item(item, event):
+                if self.gateway is not None:
+                    await self.gateway.reject_interaction(event)
+                return
+            # OW-SEC-005: the button VALUE is decoded from the click payload, so the ceiling
+            # is enforced on what arrives, not on what `buttons_for` intended to offer.
+            if resolution not in TRANSPORT_OUTCOMES:
                 if self.gateway is not None:
                     await self.gateway.reject_interaction(event)
                 return
         already = item is not None and item.state != "pending"
-        resolved = await self.resolve_inbox(item_id, resolution)
+        resolved = await self.resolve_inbox(
+            item_id, resolution, origin=ORIGIN_TRANSPORT
+        )
         if not resolved and not already:
             return
         who = getattr(event, "user_name", None) or "someone"
@@ -4572,29 +4605,28 @@ class SessionManager:
         """Try to handle an inbound Slack/Telegram message as an Inbox reply. Returns True if the
         message carried an `[ow:<id>]` token (so it's consumed here, not routed as a new turn) —
         resolving the item also releases any agent suspended on it."""
+        from ..inbox import ORIGIN_TRANSPORT, PROTECTED_KINDS
         from ..inbox_routing import resolve_from_reply
 
         text = getattr(event, "text", "") or ""
+
+        def _kind(item_id: str) -> Optional[str]:
+            item = self.inbox.get(item_id)
+            return getattr(item, "kind", None) if item is not None else None
 
         def _resolve(item_id: str, resolution: str) -> bool:
             item = self.inbox.get(item_id)
             if item is None:
                 return False
-            if (
-                getattr(event.source, "platform", "") == "slack"
-                and item.kind in {"approval", "directory", "plan"}
+            # OW-SEC-004: bind the actor for every transport, not only Slack.
+            if item.kind in PROTECTED_KINDS and not self._transport_actor_owns_item(
+                item, event.source
             ):
-                actor_id = str(getattr(event.source, "user_id", "") or "")
-                if not self._slack_actor_owns_item(
-                    item,
-                    actor_id=actor_id,
-                    chat_id=getattr(event.source, "chat_id", "") or "",
-                    team_id=getattr(event.source, "team_id", None),
-                ):
-                    return False
-            return self.inbox.resolve(item_id, resolution)
+                return False
+            # OW-SEC-005: a transport answer is one-shot; it can never become durable trust.
+            return self.inbox.resolve(item_id, resolution, origin=ORIGIN_TRANSPORT)
 
-        return resolve_from_reply(text, _resolve) is not None
+        return resolve_from_reply(text, _resolve, item_kind=_kind) is not None
 
     # -- self-wake resumption ---------------------------------------------------
     async def _scheduler_tick(self) -> None:

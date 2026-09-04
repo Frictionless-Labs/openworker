@@ -41,9 +41,9 @@ property of `5bc10d9` or new Frictionless work.
 |---|---|---|---|---|---|---|---|---|---|---|
 | OW-SEC-001 | P0 | Python dependency graph is unpinned; no committed lock, no frozen install | `uv.lock` absent; CI installs unlocked | Yes | **CLOSED** `downstream-fix-required` | M02 | `uv.lock`, `pyproject.toml`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | `uv lock --check` gate in CI | Release reproducibility | Upstream commits its own lock and locked CI |
 | OW-SEC-002 | P0 | Spreadsheet preview parses hostile workbooks with `xlsx@0.18.5` (GHSA-4r6h-8v6p-xvw6 prototype pollution, GHSA-5pgg-2g8v-p4x9 ReDoS) | `package.json` `"xlsx": "^0.18.5"`; live `import("xlsx")` in `SheetViewer` | Yes | **CLOSED** `downstream-fix-required` + `disabled-by-capability-gate` | M02 | `surfaces/gui/package.json`, `surfaces/gui/src/sheet/parser.ts`, `surfaces/gui/src/capabilities.ts`, `surfaces/gui/src/components/RightRail.tsx` | `src/sheet/parser.test.ts` (17 cases) | Spreadsheet preview OFF (`capabilities.ts`) | npm publishes a patched `xlsx >= 0.20.2`, or `read-excel-file` is superseded |
-| OW-SEC-003 | P0 | Approval reply intent parser inverted negated replies (`"I cannot approve this"` matched allow) | Fixed upstream: `_reply_intent` matches the LEADING token only | Yes | `inherited-upstream-fix` | M03 | `coworker/inbox_routing.py` | leading-intent corpus rows | — | Never remove; add corpus lock |
-| OW-SEC-004 | P0 | Approval resolution over messaging transports is not bound to an actor or transport; any inbound reply carrying a leaked `[ow:<id>]` token resolves the item | `resolve_from_reply(reply, resolve)` takes no actor/transport/binding argument | Yes | `downstream-fix-required` | M03 | `coworker/inbox_routing.py`, `coworker/server/manager.py` | wrong-actor / wrong-transport / stale / duplicate corpus | Connector writes OFF until green | Upstream adds actor binding |
-| OW-SEC-005 | P0 | A messaging reply could mint durable authority (`always*`, root expansion, standing rules) rather than a one-shot outcome | Transport replies map to free-text `resolution`; no explicit one-shot ceiling exists | Yes | `downstream-fix-required` | M03 | `coworker/inbox_routing.py` | persistent-keyword corpus rows | Connector writes / unattended OFF | Upstream restricts transport outcomes |
+| OW-SEC-003 | P0 | Approval reply intent parser inverted negated replies (`"I cannot approve this"` matched allow) | Fixed upstream: `_reply_intent` matches the LEADING token only | Yes | **CLOSED** `inherited-upstream-fix` (corpus locked) | M03 | `coworker/inbox_routing.py` | `tests/test_approval_authority.py` REPLY_CORPUS | — | Never remove the corpus |
+| OW-SEC-004 | P0 | Approval resolution over messaging transports was bound to an actor **for Slack only**; a Telegram reply or button click carrying a leaked `[ow:<id>]` token resolved a protected item with no actor check at all | slack-only branch in `_resolve_inbox_reply` / `_on_interaction` | Yes | **CLOSED** `downstream-fix-required` | M03 | `coworker/server/manager.py` | `test_transport_actor_binding_is_deny_first` | Connector writes OFF until M04 too | Upstream adds transport-agnostic binding |
+| OW-SEC-005 | P0 | A messaging reply reading `always` fell through intent parsing as free text and reached `inbox_approver`, which mapped it to `ALWAYS_TOOL` — durable tool trust minted by an inbound message | live fail-open at `5bc10d9` | Yes | **CLOSED** `downstream-fix-required` | M03 | `coworker/inbox.py`, `coworker/inbox_routing.py`, `coworker/server/manager.py` | persistent-keyword rows + `test_transport_always_denies_it_does_not_downgrade` | Connector writes / unattended OFF until M04 | Upstream restricts transport outcomes |
 | OW-SEC-006 | P0 | External content authority is enforced by *prompt text* only ("treat as untrusted data, not instructions"); no structural origin survives storage or provider serialization | `coworker/provenance.py` tracks self-authored FILES only; no `TrustOrigin` | Yes | `downstream-fix-required` | M04 | `coworker/trust.py` (new), `coworker/audit.py` | trust-origin propagation suite | High-sensitivity connectors OFF | Upstream ships structural taint (OPE-114 general design) |
 | OW-SEC-007 | P0 | No egress gate consumes provenance: untrusted-derived or secret-like content may leave to a destination the operator never bound | Domain allowlists exist, but are content-blind | Yes | `downstream-fix-required` | M04 | `coworker/egress.py` (new) | red-team egress corpus | Connector writes OFF | Upstream ships an egress policy layer |
 | OW-SEC-008 | P1 | `web_fetch` can carry sensitive data in query/body to a new destination | `web_fetch` is `requires_approval=False`; address guard checks destination class, not content sensitivity | Yes | `downstream-fix-required` | M04 | `coworker/egress.py`, `coworker/web/tool.py` | data-bearing `web_fetch` cases | — | Upstream adds content-aware egress |
@@ -119,3 +119,43 @@ spreadsheet app. Recorded as an intentional scope reduction, not an unnoticed re
 Spreadsheet preview stays **OFF** in `surfaces/gui/src/capabilities.ts`. The parser corpus
 being green earns the right to enable it; it does not enable it. That is a Mikkoh decision
 recorded in `RELEASE_EVIDENCE.md`.
+
+
+## M03 closure evidence — Approval Authority
+
+| Acceptance boolean | Result | Evidence |
+|---|---|---|
+| `no, don't approve`, `not allowed`, and mixed intent never allow execution | PASS | 22-row `REPLY_CORPUS` x 3 protected kinds = 66 cases |
+| Wrong transport, channel, actor, or item ID cannot resolve protected approvals | PASS | `test_transport_actor_binding_is_deny_first`, `test_malformed_item_id_resolves_nothing` |
+| Messaging replies cannot mint `always*`, root-expanding, or scheduled persistent authority | PASS | `test_transport_always_denies_it_does_not_downgrade`, persistent-keyword rows |
+| Denied or ambiguous approvals stay denied/pending | PASS | corpus asserts `state == "pending"` and `resolution is None` |
+
+**Fail-open approval cases: 0 / 84.**
+
+### The live fail-open this closed
+
+At `5bc10d9`, `_reply_intent` returned `None` for the word `always`, so
+`resolve_from_reply` passed it through as a *free-text answer*. `inbox_approver` then read
+`resolution == "always"` and returned `ApprovalOutcome.ALWAYS_TOOL`. An inbound Slack or
+Telegram message reading `always [ow:<id>]` therefore minted **durable, cross-session tool
+trust**. Upstream's leading-intent fix (OW-SEC-003) closed the negation inversion but not
+this path, because `always` is neither an allow word nor a deny word.
+
+### Three structural controls, not a wider keyword list
+
+1. **Authority origin on the item.** `InboxItem.resolution_origin` records whether a
+   resolution came from an in-app control or a transport, and `inbox_approver` grants
+   `ALWAYS_TOOL` only for `ORIGIN_IN_APP`. Recorded on the item rather than inferred at the
+   approver because the approver also runs after a durable resume, where the calling
+   context is gone. An item persisted before the field existed reads as transport-grade.
+2. **A transport outcome ceiling.** For a protected kind, a transport reply must be an
+   unambiguous `allow`/`deny`. Free text, negation, mixed intent and persistent-grant
+   keywords all leave the item **pending** — recoverable in the app, where the authority is.
+3. **Transport-agnostic actor binding.** `_transport_actor_owns_item` dispatches by platform
+   and returns `False` for any transport without an owner check, including an empty or
+   unrecognised platform. Adding a transport now requires adding its owner check; it cannot
+   inherit Slack's by accident.
+
+A transport `always` **denies** rather than silently downgrading to allow-once: the reply
+asked for authority the transport may not grant, and an approval gate resolves ambiguity as
+deny — a quiet downgrade would still run a call the operator may not have meant.

@@ -39,6 +39,22 @@ STATE_RESOLVED = "resolved"
 VIS_INLINE = "inline"
 VIS_INBOX = "inbox"
 
+# WHERE a resolution came from (OW-SEC-005). Durable authority — "always allow this tool",
+# a widened directory grant, a standing task rule — is a decision whose effect outlives the
+# conversation that authorised it, so it may only be minted by an explicit in-app control
+# the operator drove themselves. A messaging transport carries a one-shot answer and
+# nothing more: Slack and Telegram identify a *speaker*, not a session, and the reply text
+# is attacker-influenceable in any channel the item was mirrored to.
+#
+# This is recorded on the item rather than inferred at the approver, because the approver
+# runs after a durable resume where the calling context is gone.
+ORIGIN_IN_APP = "in_app"
+ORIGIN_TRANSPORT = "transport"
+
+# Kinds whose resolution grants the agent authority it does not already have. A wrong actor,
+# wrong transport, stale id or ambiguous reply must never resolve one of these.
+PROTECTED_KINDS = frozenset({KIND_APPROVAL, KIND_DIRECTORY, KIND_PLAN})
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -70,6 +86,10 @@ class InboxItem:
     resolution: Optional[str] = (
         None  # approval: "allow"/"deny"/"always"; question: answer text
     )
+    # ORIGIN_IN_APP | ORIGIN_TRANSPORT — the authority ceiling for this resolution
+    # (OW-SEC-005). Absent on items persisted before the field existed; treated as
+    # transport-grade there, which is the conservative direction.
+    resolution_origin: Optional[str] = None
     inbox: str = "default"  # named inbox / delivery binding (Phase 3 routing)
     created_at: str = field(default_factory=_now)
     resolved_at: Optional[str] = None
@@ -331,15 +351,23 @@ class InboxStore:
         return self.list(session_id=session_id, state=STATE_PENDING)
 
     # -- the state machine ------------------------------------------------------
-    def resolve(self, item_id: str, resolution: str) -> bool:
+    def resolve(
+        self, item_id: str, resolution: str, *, origin: str = ORIGIN_IN_APP
+    ) -> bool:
         """Resolve an item exactly once. First responder wins; later attempts are no-ops
-        (return False). Fires any awaiting agent (the suspended inbox_approver)."""
+        (return False). Fires any awaiting agent (the suspended inbox_approver).
+
+        `origin` is the authority ceiling of the answer, not a label: a transport-origin
+        resolution can never become durable trust (see `inbox_approver`). It defaults to
+        in-app because every in-process caller IS the app; transports pass it explicitly.
+        """
         with self._lock:
             item = self._items.get(item_id)
             if item is None or item.state == STATE_RESOLVED:
                 return False
             item.state = STATE_RESOLVED
             item.resolution = resolution
+            item.resolution_origin = origin
             item.resolved_at = _now()
             self._save()
         waiter = self._waiters.get(item_id)
@@ -398,8 +426,16 @@ def inbox_approver(store: InboxStore, session_id: str, *, inbox: str = "default"
             inbox=inbox,
         )
         resolution = await store.wait(item.id)
+        resolved = store.get(item.id)
+        origin = getattr(resolved, "resolution_origin", None)
         if resolution == "always":
-            return ApprovalOutcome.ALWAYS_TOOL
+            # OW-SEC-005: a request for STANDING authority is only authority when an in-app
+            # control minted it. Over a transport it is an ambiguous escalation attempt, and
+            # an approval gate resolves ambiguity as deny — never as a quiet downgrade to
+            # allow-once, which would still run the call the user may not have meant.
+            if origin == ORIGIN_IN_APP:
+                return ApprovalOutcome.ALWAYS_TOOL
+            return ApprovalOutcome.DENY
         if resolution == "allow":
             return ApprovalOutcome.ONCE
         return ApprovalOutcome.DENY
