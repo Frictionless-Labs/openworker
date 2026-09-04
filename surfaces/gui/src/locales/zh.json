@@ -241,6 +241,7 @@
     "sheet_error": "无法解析表格：{{error}}",
     "sheet_parsing": "正在解析表格…",
     "sheet_empty": "空表格。",
+    "sheet_disabled": "此版本已关闭电子表格预览。请使用电子表格应用打开该文件。",
     "open_in_default": "用默认应用打开",
     "show_in_folder": "在文件夹中显示",
     "show_folder": "显示这些文件的保存位置",

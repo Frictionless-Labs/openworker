@@ -244,6 +244,7 @@
     "sheet_error": "Could not parse spreadsheet: {{error}}",
     "sheet_parsing": "Parsing spreadsheet…",
     "sheet_empty": "Empty sheet.",
+    "sheet_disabled": "Spreadsheet preview is off in this build. Open the file in a spreadsheet app.",
     "open_in_default": "Open in default app",
     "show_in_folder": "Show in folder",
     "show_folder": "Show the folder where these files are saved",

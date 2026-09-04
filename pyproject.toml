@@ -48,6 +48,11 @@ messaging = ["python-telegram-bot>=21", "slack-bolt>=1.18", "aiohttp>=3.9"]
 browser = ["playwright>=1.44"]
 # AWS Bedrock provider (lazy-imported; desktop builds bundle it, pip users opt in).
 bedrock = ["boto3>=1.34"]
+# Build-time only, for the PyInstaller sidecar the desktop bundle ships. Declared as an
+# extra (rather than installed ad hoc in the release job) so these land in uv.lock and the
+# released binary is reproducible from the same locked graph as CI (OW-SEC-001).
+# PyInstaller walks mcp.cli, which imports typer; tzdata ships zoneinfo for Windows.
+packaging = ["pyinstaller>=6", "typer>=0.12", "tzdata>=2024.1"]
 
 [project.scripts]
 openworker = "coworker.cli:main"

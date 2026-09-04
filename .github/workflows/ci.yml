@@ -13,12 +13,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install
+      # OW-SEC-001: the runtime graph is resolved from the committed uv.lock, never
+      # re-resolved at CI time. uv itself is version-pinned from PyPI rather than
+      # installed through a third-party action, so nothing in this job floats.
+      - name: Install uv (pinned)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[messaging,dev,bedrock]"
-      - name: Test
-        run: pytest tests -q
+          pip install "uv==0.8.17"
+      - name: Verify the Python lock is current
+        run: uv lock --check
+      - name: Test (locked resolution)
+        run: uv run --locked --extra messaging --extra dev --extra bedrock pytest tests -q
 
   gui-unit:
     runs-on: ubuntu-latest

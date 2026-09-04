@@ -39,8 +39,8 @@ property of `5bc10d9` or new Frictionless work.
 
 | ID | Severity | Finding | State at `5bc10d9` | Reachable | Disposition | Module | Primary files | Regression test | Capability prerequisite | Removal condition |
 |---|---|---|---|---|---|---|---|---|---|---|
-| OW-SEC-001 | P0 | Python dependency graph is unpinned; no committed lock, no frozen install | `uv.lock` absent; CI installs unlocked | Yes | `downstream-fix-required` | M02 | `uv.lock`, `.github/workflows/ci.yml` | `uv lock --check` in CI | Release reproducibility | Upstream commits its own lock and locked CI |
-| OW-SEC-002 | P0 | Spreadsheet preview parses hostile workbooks with `xlsx@0.18.5` (GHSA-4r6h-8v6p-xvw6 prototype pollution, GHSA-5pgg-2g8v-p4x9 ReDoS) | `package.json` `"xlsx": "^0.18.5"`; live `import("xlsx")` in `SheetViewer` | Yes | `downstream-fix-required` + `disabled-by-capability-gate` | M02 | `surfaces/gui/package.json`, `surfaces/gui/src/components/RightRail.tsx`, `surfaces/gui/src/sheet/` | `sheetParser` hostile-workbook suite | Spreadsheet preview OFF until green | npm publishes a patched `xlsx >= 0.20.2` |
+| OW-SEC-001 | P0 | Python dependency graph is unpinned; no committed lock, no frozen install | `uv.lock` absent; CI installs unlocked | Yes | **CLOSED** `downstream-fix-required` | M02 | `uv.lock`, `pyproject.toml`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | `uv lock --check` gate in CI | Release reproducibility | Upstream commits its own lock and locked CI |
+| OW-SEC-002 | P0 | Spreadsheet preview parses hostile workbooks with `xlsx@0.18.5` (GHSA-4r6h-8v6p-xvw6 prototype pollution, GHSA-5pgg-2g8v-p4x9 ReDoS) | `package.json` `"xlsx": "^0.18.5"`; live `import("xlsx")` in `SheetViewer` | Yes | **CLOSED** `downstream-fix-required` + `disabled-by-capability-gate` | M02 | `surfaces/gui/package.json`, `surfaces/gui/src/sheet/parser.ts`, `surfaces/gui/src/capabilities.ts`, `surfaces/gui/src/components/RightRail.tsx` | `src/sheet/parser.test.ts` (17 cases) | Spreadsheet preview OFF (`capabilities.ts`) | npm publishes a patched `xlsx >= 0.20.2`, or `read-excel-file` is superseded |
 | OW-SEC-003 | P0 | Approval reply intent parser inverted negated replies (`"I cannot approve this"` matched allow) | Fixed upstream: `_reply_intent` matches the LEADING token only | Yes | `inherited-upstream-fix` | M03 | `coworker/inbox_routing.py` | leading-intent corpus rows | — | Never remove; add corpus lock |
 | OW-SEC-004 | P0 | Approval resolution over messaging transports is not bound to an actor or transport; any inbound reply carrying a leaked `[ow:<id>]` token resolves the item | `resolve_from_reply(reply, resolve)` takes no actor/transport/binding argument | Yes | `downstream-fix-required` | M03 | `coworker/inbox_routing.py`, `coworker/server/manager.py` | wrong-actor / wrong-transport / stale / duplicate corpus | Connector writes OFF until green | Upstream adds actor binding |
 | OW-SEC-005 | P0 | A messaging reply could mint durable authority (`always*`, root expansion, standing rules) rather than a one-shot outcome | Transport replies map to free-text `resolution`; no explicit one-shot ceiling exists | Yes | `downstream-fix-required` | M03 | `coworker/inbox_routing.py` | persistent-keyword corpus rows | Connector writes / unattended OFF | Upstream restricts transport outcomes |
@@ -77,3 +77,45 @@ property of `5bc10d9` or new Frictionless work.
 - **OW-SEC-002 has no upstream npm remedy.** SheetJS stopped publishing to npm; the fixed
   build is distributed from `cdn.sheetjs.com`. Any downstream fix must either vendor that
   build reproducibly or replace the parser.
+
+
+## M02 closure evidence — Supply Chain + Spreadsheet Parser
+
+| Acceptance boolean | Result | Evidence |
+|---|---|---|
+| `uv.lock` exists, committed, `uv lock --check` passes | PASS | 111 packages resolved; `uv lock --check` clean |
+| CI/bootstrap uses locked resolution | PASS | `ci.yml` runs `uv lock --check` then `uv run --locked …`; `release.yml` runs `uv sync --locked` |
+| Active GUI dependency is not npm `xlsx@0.18.5` | PASS | `xlsx` removed from `package.json` **and** `package-lock.json` (0 occurrences) |
+| SheetJS >=0.20.2 authoritative build **or** a maintained replacement | PASS (replacement) | `read-excel-file@9.3.10`, MIT, npm registry, exact-pinned |
+| GHSA-4r6h-8v6p-xvw6 and GHSA-5pgg-2g8v-p4x9 absent from the active path | PASS | `npm audit --omit=dev` → **found 0 vulnerabilities** |
+| Hostile workbook does not pollute prototype or hang the UI | PASS | 17/17 in `src/sheet/parser.test.ts` |
+
+### Why a replacement rather than the authoritative SheetJS build
+
+The SPEC allows either. The authoritative fixed build (`>=0.20.2`) is published **only** from
+`cdn.sheetjs.com`; npm's `xlsx` is frozen at the vulnerable `0.18.5`. Two facts decided it:
+
+1. The release gate verifies reproducibility with `npm ci` against the committed lockfile. A
+   CDN tarball dependency is pinnable by integrity hash, but it moves a release-blocking
+   dependency onto a single non-registry host.
+2. This build environment's egress policy denies `cdn.sheetjs.com` outright
+   (`CONNECT` → 403), so the authoritative build **could not be pinned reproducibly here**.
+   Per the M02 contract that is a stop condition for the CDN path, not a reason to ship
+   `0.18.5`.
+
+`read-excel-file` is maintained (published 2026-08-10), MIT, and on the registry the lockfile
+already trusts.
+
+### Deliberate capability reduction: legacy `.xls`
+
+The backend classifies both `.xlsx` and `.xls` as `sheet` artifacts. `read-excel-file` reads
+OOXML only, so the adapter **refuses** `.xls` by magic-byte sniff rather than reaching for a
+second binary parser. This is a net security improvement — the OLE2 compound-binary path was
+the higher-risk surface — and the UI already directs spreadsheet artifacts to a real
+spreadsheet app. Recorded as an intentional scope reduction, not an unnoticed regression.
+
+### Residual
+
+Spreadsheet preview stays **OFF** in `surfaces/gui/src/capabilities.ts`. The parser corpus
+being green earns the right to enable it; it does not enable it. That is a Mikkoh decision
+recorded in `RELEASE_EVIDENCE.md`.

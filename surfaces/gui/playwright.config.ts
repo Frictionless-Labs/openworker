@@ -5,6 +5,13 @@ import { defineConfig, devices } from "@playwright/test";
 // mutate real state — safe for CI and for asserting regressions in the interaction flows.
 const PORT = 5199;
 
+// Some build/CI images ship a pre-installed Chromium that does not match the revision this
+// @playwright/test version would download (and have no egress to fetch one). Point
+// PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH at that binary to run the suite against it. Unset —
+// the normal case, including GitHub Actions after `playwright install` — Playwright picks
+// its own pinned build exactly as before.
+const chromiumExecutable = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -15,7 +22,15 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     trace: "on-first-retry",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        launchOptions: { executablePath: chromiumExecutable },
+      },
+    },
+  ],
   webServer: {
     // Dev server on a dedicated port so it never collides with a running `npm run dev` (5173).
     command: `npm run dev -- --port ${PORT} --strictPort`,

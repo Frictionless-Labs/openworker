@@ -15,6 +15,9 @@ import {
   type JournalCase,
   type RootInfo,
 } from "../api";
+import { capabilityEnabled } from "../capabilities";
+import type { SheetTable } from "../sheet/parser";
+import { decodeDataUrl, parseWorkbook } from "../sheet/parser";
 import type { SessionInfo, TodoItem } from "../types";
 import { AccessSection } from "./AccessSection";
 import { BoardSection } from "./BoardPanel";
@@ -878,38 +881,48 @@ function PdfViewer({ dataUrl }: { dataUrl: string }) {
   );
 }
 
+// OW-SEC-002: workbook bytes are hostile input parsed inside the PRIVILEGED app webview.
+// Two controls, not one. The capability gate keeps the preview OFF until the M02 corpus is
+// green and the change authority turns it on; the adapter bounds size, format, time and
+// output shape for when it is. Neither substitutes for the other — a gate that is later
+// flipped must land on a parser that was already safe.
 function SheetViewer({ dataUrl }: { dataUrl: string }) {
   const { t } = useTranslation();
-  const [sheets, setSheets] = useState<{ name: string; rows: unknown[][] }[] | null>(null);
+  const [sheets, setSheets] = useState<SheetTable[] | null>(null);
   const [error, setError] = useState("");
   const [active, setActive] = useState(0);
+  const enabled = capabilityEnabled("spreadsheetPreview");
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     setSheets(null);
     setError("");
     setActive(0);
-    const base64 = dataUrl.split(",")[1] || "";
-    import("xlsx")
-      .then((XLSX) => {
-        if (cancelled) return;
-        const wb = XLSX.read(base64, { type: "base64" });
-        setSheets(
-          wb.SheetNames.map((name) => ({
-            name,
-            rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" }) as unknown[][],
-          })),
-        );
-      })
-      .catch((e) => !cancelled && setError(String(e?.message || e)));
+    (async () => {
+      try {
+        const tables = await parseWorkbook(decodeDataUrl(dataUrl));
+        if (!cancelled) setSheets(tables);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [dataUrl]);
+  }, [dataUrl, enabled]);
 
+  if (!enabled) {
+    return (
+      <div className="rail-muted artifact-table-note" data-testid="sheet-preview-disabled">
+        {t("rail.sheet_disabled")}
+      </div>
+    );
+  }
   if (error) return <div className="rail-error artifact-table-note">{t("rail.sheet_error", { error })}</div>;
   if (!sheets) return <div className="rail-muted artifact-table-note">{t("rail.sheet_parsing")}</div>;
   const sheet = sheets[active];
+  if (!sheet) return <div className="rail-muted artifact-table-note">{t("rail.sheet_empty")}</div>;
   return (
     <div className="sheet-viewer">
       {sheets.length > 1 && (

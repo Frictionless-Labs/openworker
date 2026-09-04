@@ -74,14 +74,15 @@ jobs:
 
       - name: Set up the sidecar venv (.venv)
         # The build scripts expect a venv at .venv with the package + PyInstaller.
-        # typer/tzdata are build-time-only (PyInstaller walks mcp.cli, which needs typer;
-        # tzdata ships zoneinfo for Windows). aisuite installs like any other dependency
-        # (git-pinned in pyproject.toml).
+        # OW-SEC-001: resolved from the committed uv.lock (`--locked` fails rather than
+        # silently re-resolving), so the shipped sidecar is built from the exact graph CI
+        # tested. Build-time-only deps live in the `packaging` extra. aisuite installs
+        # like any other dependency (git-pinned in pyproject.toml).
         run: |
-          python -m venv .venv
+          python -m pip install --upgrade pip
+          python -m pip install "uv==0.8.17"
+          uv sync --locked --extra bedrock --extra packaging
           if [ "$RUNNER_OS" = "Windows" ]; then VPY=.venv/Scripts/python; else VPY=.venv/bin/python; fi
-          "$VPY" -m pip install --upgrade pip
-          "$VPY" -m pip install -e ".[bedrock]" pyinstaller typer tzdata
           "$VPY" -c "import aisuite, coworker"  # fail fast if either import breaks
 
       - name: npm ci
