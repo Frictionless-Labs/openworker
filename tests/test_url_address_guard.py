@@ -13,6 +13,44 @@ from coworker.web import guard
 from coworker.web.fetch import make_web_fetch_tool
 
 
+@pytest.fixture(autouse=True)
+def _public_dns_by_default(monkeypatch):
+    """Resolve every NAME to a fixed public address unless a test says otherwise.
+
+    This file tests the ADDRESS POLICY, not DNS availability. Most of its cases already
+    stubbed `getaddrinfo` themselves, but the browser-redirect ones did not and so reached
+    the real resolver — which fails wherever `example.com` and `short.link` do not resolve
+    (a runner with a restricted DNS view, or no network). A mandatory security corpus that
+    depends on live DNS is flaky by construction, and worse, it would pass for the wrong
+    reason if a name stopped resolving, because the guard refuses what it cannot resolve.
+
+    Tests that are ABOUT resolution — a name that fails to resolve, a record that flips
+    between answers, a private answer among public ones — set their own `getaddrinfo`
+    after this one, and theirs wins. Literal-IP cases do no lookup at all.
+
+    `localhost` is deliberately left to the real resolver: the loopback-BY-NAME case is one
+    of the things this corpus exists to prove, and stubbing it public would have quietly
+    turned that assertion into the opposite of itself.
+    """
+    real = socket.getaddrinfo
+    loopback_names = {"localhost", "localhost.localdomain", "ip6-localhost"}
+
+    def fake(host, port, *args, **kwargs):
+        if str(host).lower() in loopback_names:
+            return real(host, port, *args, **kwargs)
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", port or 443),
+            )
+        ]
+
+    monkeypatch.setattr(guard.socket, "getaddrinfo", fake)
+
+
 def _resolves_to(monkeypatch, ip: str):
     monkeypatch.setattr(
         guard.socket, "getaddrinfo",

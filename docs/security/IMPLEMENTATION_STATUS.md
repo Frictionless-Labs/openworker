@@ -10,8 +10,8 @@ Read this file first in any resumed session, after `CLAUDE.md`, `SPEC.md`, and `
 | Changed files | See the per-module commits on this branch. M02: `uv.lock`, `pyproject.toml`, `.github/workflows/{ci,release}.yml`, `surfaces/gui/package.json`, `surfaces/gui/package-lock.json`, `surfaces/gui/playwright.config.ts`, `surfaces/gui/src/capabilities.ts`, `surfaces/gui/src/sheet/{parser,testWorkbook,parser.test}.ts`, `surfaces/gui/src/components/RightRail.tsx`, `surfaces/gui/src/locales/{en,zh}.json` · M03: `coworker/inbox.py`, `coworker/inbox_routing.py`, `coworker/server/manager.py`, `tests/test_approval_authority.py` |
 | Tests | pytest **2347 passed, 1 skipped, 0 failed** · GUI unit **219** · GUI E2E **221** · `tsc --noEmit` clean · `npm run build` OK · `cargo test stt` 4 passed · `cargo check` Tauri OK · `uv lock --check` clean · `pip-audit --strict` clean · `npm audit` 0 vulns · secret scan clean vs baseline · SBOMs generated |
 | Findings | 18/18 dispositioned. Closed with tests: OW-SEC-001..015, OW-SEC-017(shape), OW-REL-001. Gated-not-closed: OW-SEC-010 (detection, browser OFF), OW-SEC-016 (native round-trip unverified off macOS) |
-| Decisions | None required from Mikkoh yet |
-| Next step | A human runs the macOS build and the native Keychain round-trip (see `RELEASE_EVIDENCE.md` → "What a person must do next") |
+| Decisions | D-1…D-6 ratified by Mikkoh Chen 2026-11-23: spreadsheet preview + active HTML preview ENABLED (with the CSP gap disclosed); remote MCP and connector writes stay OFF through the pilot; evidence refs pushed to origin; `script-src 'unsafe-inline'` accepted |
+| Next step | A human runs the macOS build and the native Keychain round-trip (see `RELEASE_EVIDENCE.md` → "What a person must do next"). Capability decisions are closed. |
 
 ## M01 acceptance booleans
 

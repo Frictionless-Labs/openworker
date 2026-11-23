@@ -705,13 +705,27 @@ function ArtifactViewer({
         ) : content.error ? (
           <div className="rail-error">{content.error}</div>
         ) : content.kind === "html" ? (
-          <iframe
-            key={`${artifact.path}-${reloadKey}`}
-            sandbox="allow-scripts"
-            className="artifact-frame"
-            data-testid="artifact-frame"
-            srcDoc={sandboxHtml(content.content || "")}
-          />
+          // OW-SEC-017: agent-authored HTML is active content inside the PRIVILEGED app
+          // webview. Two independent controls: the sandbox below (opaque origin — no
+          // parent DOM, no launch token, no Tauri IPC) and this capability gate. The gate
+          // is wired even while it is ON, because a flag that controls nothing is worse
+          // than no flag — it reads as a control in review and enforces nothing.
+          capabilityEnabled("activeHtmlPreview") ? (
+            <iframe
+              key={`${artifact.path}-${reloadKey}`}
+              sandbox="allow-scripts"
+              className="artifact-frame"
+              data-testid="artifact-frame"
+              srcDoc={sandboxHtml(content.content || "")}
+            />
+          ) : (
+            <div
+              className="rail-muted artifact-table-note"
+              data-testid="html-preview-disabled"
+            >
+              {t("rail.html_disabled")}
+            </div>
+          )
         ) : content.kind === "markdown" ? (
           <div className="artifact-md">
             <Markdown text={content.content || ""} />

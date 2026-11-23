@@ -259,8 +259,12 @@ def test_an_unknown_capability_fails_closed():
         capabilities.require("definitely_not_a_capability")
 
 
-@pytest.mark.parametrize("name", sorted(capabilities.CAPABILITIES))
-def test_every_risky_capability_ships_off(name):
+@pytest.mark.parametrize("name", ["remote_mcp", "browser_automation"])
+def test_the_two_capabilities_this_module_gates_stay_off(name):
+    """Scoped to M05's own gates. The whole table — including the rule that nothing is ON
+    without a recorded authorization — is asserted in tests/test_capability_defaults.py;
+    duplicating a blanket "everything is OFF" here only created a second place to edit the
+    moment a capability was legitimately authorized."""
     assert capabilities.enabled(name) is False, f"{name} must ship OFF"
     assert capabilities.prerequisite(name), f"{name} must name its prerequisite gate"
 

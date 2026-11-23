@@ -378,7 +378,14 @@ async def test_connect_mcp_http_401_sets_auth_hint(tmp_path, monkeypatch):
         from coworker import capabilities
 
         monkeypatch.setitem(
-            capabilities.CAPABILITIES, "remote_mcp", (True, "enabled for this test")
+            capabilities.CAPABILITIES,
+            "remote_mcp",
+            capabilities.Capability(
+                enabled=True,
+                prerequisite="OW-SEC-009 (M05): MCP OAuth endpoint corpus green",
+                authorized_by="test",
+                authorized_at="1970-01-01",
+            ),
         )
         monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
         _write_json(

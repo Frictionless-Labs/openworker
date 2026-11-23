@@ -392,3 +392,25 @@ afterwards whether it was a disk-full crash or something worth investigating. Co
 are renamed, never deleted, and the recovery event carries the store name, the reason and
 the quarantine path — never the content, which would make the log a second copy of the thing
 it is reporting.
+
+
+## Ratified capability and residual-risk decisions — 2026-11-23
+
+Recorded here because two of them are accepted residuals, not closed findings, and a ledger
+that only lists closures misrepresents the posture.
+
+| ID | Decision | Finding touched | Residual accepted |
+|---|---|---|---|
+| D-1 | Spreadsheet preview **ENABLED** | OW-SEC-002 | Legacy `.xls` previews are gone. The OLE2 binary path was the higher-risk surface, and the UI already routes spreadsheets to a real spreadsheet app, so this is a deliberate capability reduction rather than a regression. |
+| D-2 | Remote MCP **stays OFF** | OW-SEC-009 | None. The corpus is green; the capability is held back by the strategy's pilot lock, not by missing evidence. |
+| D-3 | Connector writes **stay OFF** | OW-SEC-004/005/007 | None, same reason. |
+| D-4 | Active HTML preview **ratified ON** | OW-SEC-017 | **Yes.** The application CSP's shape is locked by 7 assertions and the artifact sandbox is proven at browser level, but the CSP's behaviour in the real Tauri webview is unverified in this environment. Accepted on the basis that the sandbox — not the app CSP — is the control protecting the preview, and that disabling the preview would have deleted the strongest regression lock in the corpus. |
+| D-5 | Evidence refs pushed to origin | OW-SEC-000 (M01) | None. Closes a real gap: the refs were local-only and were lost when the container restarted mid-project. |
+| D-6 | `script-src 'unsafe-inline'` **accepted** | OW-SEC-017 | **Yes.** `srcdoc` frames inherit the parent policy, so removing it would kill the inline scripts report interactivity needs. The frame is already opaque-origin with its own `default-src 'none'`, so the marginal exposure is an XSS in the app's own React code — which `object-src 'none'`, `base-uri 'self'`, `form-action 'none'` and the absence of any remote script origin still bound. |
+
+### What is NOT covered by these decisions
+
+OW-SEC-010 (browser automation) and OW-SEC-016 (native secret round-trip) were **not**
+authorized, because neither prerequisite is met: the first is detection rather than
+prevention, and the second has never been executed on the launch platform. Both capabilities
+remain OFF and both are enforced by the `capability-defaults` CI job.

@@ -240,7 +240,11 @@ jobs:
       - name: detect-secrets (pinned)
         run: |
           pip install "detect-secrets==${DETECT_SECRETS_VERSION}"
+          # The baseline itself is excluded: it stores a hashed_secret per known finding,
+          # and those hashes trip the high-entropy detectors — so scanning it would report
+          # the record of every accounted-for finding as a brand new one.
           detect-secrets scan \
+            --exclude-files '^\.secrets\.baseline$' \
             --exclude-files 'package-lock\.json$' \
             --exclude-files 'uv\.lock$' \
             --exclude-files 'Cargo\.lock$' \

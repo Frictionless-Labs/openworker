@@ -1,14 +1,21 @@
-"""Capability defaults (OWH M10 §CapabilityGate).
+"""Capability gates (OWH M10 §CapabilityGate).
 
 A capability is earned by evidence, so the interesting failure is not "a gate is missing"
-but "a gate was quietly turned on". This file is the check that makes that edit visible: it
-runs as its own CI job, and it asserts BOTH halves of the table, because a build whose
-backend says OFF and whose UI says ON is not a build anyone reasoned about.
+but "a gate was quietly turned on". This file is the check that makes such an edit visible,
+and it runs as its own CI job.
+
+It deliberately does NOT assert "everything is OFF". That assertion has to be weakened the
+first time a capability is legitimately authorized, and a test you weaken once is a test you
+stop trusting. The durable invariants are:
+
+* nothing is ON without a recorded authorization (who, and a real date);
+* the capabilities the strategy locks for the restricted pilot are OFF;
+* both halves of the table — backend and GUI — agree, because a build whose backend says
+  OFF and whose UI says ON is not a build anyone reasoned about.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -18,14 +25,44 @@ from coworker import capabilities
 
 GUI_TABLE = Path(__file__).resolve().parents[1] / "surfaces/gui/src/capabilities.ts"
 
+# snake_case backend name -> camelCase GUI name, for the two capabilities both halves hold.
+SHARED_NAMES = {
+    "spreadsheet_preview": "spreadsheetPreview",
+    "active_html_preview": "activeHtmlPreview",
+    "remote_mcp": "remoteMcp",
+    "connector_writes": "connectorWrites",
+    "unattended_scheduler": "unattendedScheduler",
+    "browser_automation": "browserAutomation",
+}
+
+# Locked OFF through the restricted pilot. D-2/D-3 confirmed that remote MCP and connector
+# writes stay off even though their corpora are green — the strategy's launch checklist
+# locks them, and evidence earns a capability the right to be CONSIDERED, not to be on.
+# browser_automation's prerequisite is not met at all (detection, not prevention).
+LOCKED_OFF = (
+    "remote_mcp",
+    "connector_writes",
+    "unattended_scheduler",
+    "browser_automation",
+    "high_sensitivity_connectors",
+)
+
 
 @pytest.mark.parametrize("name", sorted(capabilities.CAPABILITIES))
-def test_every_capability_ships_off(name):
-    assert capabilities.enabled(name) is False, (
-        f"'{name}' is ON. Enabling a capability is a release decision recorded in "
-        "docs/security/RELEASE_EVIDENCE.md against the check that earned it — not a code "
-        "edit, and never a way to make a test pass."
+def test_nothing_is_on_without_a_recorded_authorization(name):
+    capability = capabilities.CAPABILITIES[name]
+    if not capability.enabled:
+        assert capabilities.authorization(name) == ""
+        return
+    assert capability.authorized_by, (
+        f"'{name}' is ON with no authorized_by. Enabling a capability is a release "
+        "decision recorded against the check that earned it — not a code edit, and never "
+        "a way to make a test pass."
     )
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", capability.authorized_at or ""), (
+        f"'{name}' is ON with no usable authorized_at date"
+    )
+    assert capabilities.authorization(name)
 
 
 @pytest.mark.parametrize("name", sorted(capabilities.CAPABILITIES))
@@ -37,9 +74,23 @@ def test_every_capability_names_its_prerequisite_gate(name):
     )
 
 
+@pytest.mark.parametrize("name", LOCKED_OFF)
+def test_pilot_locked_capabilities_are_off(name):
+    assert name in capabilities.CAPABILITIES, f"{name} is not gated at all"
+    assert capabilities.enabled(name) is False, (
+        f"'{name}' is locked OFF through the restricted pilot"
+    )
+
+
+def test_the_authorizations_ratified_on_2026_11_23_are_recorded():
+    """D-1 and D-4, spelled out so a later silent revert fails a test rather than passing
+    as a quiet narrowing nobody notices."""
+    for name in ("spreadsheet_preview", "active_html_preview"):
+        assert capabilities.enabled(name) is True
+        assert "2026-11-23" in capabilities.authorization(name)
+
+
 def test_the_risky_capabilities_named_by_the_strategy_are_all_present():
-    """The capability ladder is the release contract; a capability missing from the table
-    is one nobody is gating."""
     for name in (
         "remote_mcp",
         "connector_writes",
@@ -54,6 +105,7 @@ def test_the_risky_capabilities_named_by_the_strategy_are_all_present():
 
 def test_an_unknown_capability_fails_closed():
     assert capabilities.enabled("typo_in_a_capability_name") is False
+    assert capabilities.authorization("typo_in_a_capability_name") == ""
     with pytest.raises(PermissionError):
         capabilities.require("typo_in_a_capability_name")
 
@@ -64,16 +116,41 @@ def test_require_names_the_missing_gate():
     assert "OW-SEC-009" in str(excinfo.value)
 
 
-def test_the_gui_table_agrees_with_the_backend():
-    """Both halves ship OFF. Parsed rather than executed so this stays a pytest job with no
-    Node dependency; the GUI's own vitest suite asserts the same table from the other side.
+def _gui_flags() -> dict[str, bool]:
+    """Parse `name: { ... enabled: true/false ... }` out of the GUI table.
+
+    Parsed rather than executed so this stays a pytest job with no Node dependency; the
+    GUI's own vitest suite asserts the same table from the other side.
     """
     source = GUI_TABLE.read_text(encoding="utf-8")
     block = re.search(
-        r"const ENABLED: Record<CapabilityName, boolean> = \{(.*?)\};", source, re.S
+        r"export const CAPABILITIES: Record<CapabilityName, CapabilityState> = \{(.*?)\n\};",
+        source,
+        re.S,
     )
     assert block, "could not find the GUI capability table"
-    flags = dict(re.findall(r"(\w+):\s*(true|false)", block.group(1)))
-    assert flags, "the GUI capability table parsed as empty"
-    for name, value in flags.items():
-        assert value == "false", f"GUI capability '{name}' is ON"
+    found = re.findall(r"^  (\w+): \{(.*?)^  \},", block.group(1), re.S | re.M)
+    assert found, "the GUI capability table parsed as empty"
+    flags: dict[str, bool] = {}
+    for name, body in found:
+        match = re.search(r"enabled:\s*(true|false)", body)
+        assert match, f"GUI capability '{name}' has no enabled flag"
+        flags[name] = match.group(1) == "true"
+    return flags
+
+
+def test_the_gui_table_parses():
+    flags = _gui_flags()
+    assert set(flags) == set(SHARED_NAMES.values()), (
+        f"GUI table holds {sorted(flags)}; expected {sorted(SHARED_NAMES.values())}"
+    )
+
+
+@pytest.mark.parametrize("backend_name,gui_name", sorted(SHARED_NAMES.items()))
+def test_both_halves_of_the_table_agree(backend_name, gui_name):
+    flags = _gui_flags()
+    assert capabilities.enabled(backend_name) == flags[gui_name], (
+        f"'{backend_name}' is {capabilities.enabled(backend_name)} in the backend but "
+        f"'{gui_name}' is {flags[gui_name]} in the GUI — a build whose halves disagree is "
+        "not a build anyone reasoned about"
+    )
